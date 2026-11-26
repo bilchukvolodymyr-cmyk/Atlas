@@ -1,0 +1,9 @@
+[Unit]
+Description=Atlas daily database backup
+
+[Service]
+Type=oneshot
+User=atlas
+Group=atlas
+WorkingDirectory=/opt/atlas/app
+ExecStart=/opt/atlas/venv/bin/python -m atlas.backup /var/lib/atlas/atlas.db /var/lib/atlas/backups --keep 30

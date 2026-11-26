@@ -1,0 +1,24 @@
+[Unit]
+Description=Atlas work memory
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=atlas
+Group=atlas
+EnvironmentFile=/etc/atlas/env
+ExecStart=/opt/atlas/venv/bin/python -m atlas.server --db /var/lib/atlas/atlas.db --host 127.0.0.1 --port 8710
+WorkingDirectory=/opt/atlas/app
+Restart=always
+RestartSec=5
+# hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/atlas
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
