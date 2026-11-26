@@ -9,18 +9,22 @@ Mac спить — файли чекають в iCloud; без інтернет�
 
 ## Команда «Atlas» (записати)
 
-1. «Команди» → «+» → назва **Atlas**.
-2. **Диктувати текст** (Dictate Text), мова українська.
-3. **Поточна дата** → **Форматувати дату** (Format Date), власний формат `yyyyMMdd-HHmmss-SSS`.
-4. **Текст** (Text): `iphone-` + Форматована дата. Це назва файлу й номер повідомлення.
-5. **Зберегти файл** (Save File): вхід = Диктований текст; «Запитувати, де зберегти» — вимкнено;
-   шлях `Atlas/inbox/` + Текст з кроку 4 + `.txt`; «Замінити» — вимкнено.
-6. **Показати сповіщення**: «Записано в Atlas».
+Назви дій залежать від мови iPhone: тут італійська, у дужках англійська.
+Шукати дії зручно рядком пошуку внизу («input», «data», «salva file», «notifica»).
+
+1. «Comandi» → «+» → назва **Atlas**.
+2. **Richiedi input** (Ask for Input): tipo Testo, підказка «Atlas». Під час запуску натисни
+   мікрофон на клавіатурі й диктуй (надійніше, ніж «Detta testo» / Dictate Text).
+3. **Data attuale** (Current Date) → **Formatta data** (Format Date): формат «Personalizzato»
+   `yyyyMMdd-HHmmss-SSS`. Це назва файлу й унікальний номер повідомлення.
+4. **Salva file** (Save File): вхід = Input fornito; «Chiedi dove salvare» — вимкнено;
+   шлях `Atlas/inbox/` + Data formattata + `.txt`.
+5. **Mostra notifica** (Show Notification): «Записано в Atlas».
 
 ## Команда «Atlas відповіді» (подивитися, що записано)
 
-1. **Отримати вміст папки** (Get Contents of Folder): `iCloud Drive/Atlas/outbox`.
-2. **Фільтрувати файли** (Filter Files): сортувати за датою зміни, від нових; обмеження 5.
-3. **Повторити з кожним** → **Отримати текст із вводу** → **Показати результат**.
+1. **Ottieni contenuti della cartella** (Get Contents of Folder): `iCloud Drive/Atlas/outbox`.
+2. **Filtra file** (Filter Files): сортувати за датою зміни, від нових; обмеження 5.
+3. **Ripeti con ognuno** (Repeat with Each) → **Ottieni testo dall'input** (Get Text from Input) → **Mostra risultato** (Show Result).
 
 Запуск: кнопка дії iPhone 16 (Параметри → Кнопка дії → Команда → Atlas), Siri, віджет.
