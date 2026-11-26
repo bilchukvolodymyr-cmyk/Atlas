@@ -11,7 +11,7 @@ from test_stage1 import FakeClient, item
 def make(tmp_path, *responses):
     client = FakeClient(*responses)
     box = FolderInbox(tmp_path / "Atlas", str(tmp_path / "a.db"), ClaudeParser(client=client),
-                      clock=lambda: time.time() + 10)
+                      clock=lambda: time.time() + 10, downloader=lambda p: None)
     return box, client
 
 
@@ -209,3 +209,13 @@ def test_whisper_command_line(tmp_path):
     assert w.transcribe(tmp_path / "x.m4a") == "Завтра рампа 31"
     assert calls[0][0] == "afconvert"
     assert calls[1][:5] == ["whisper-cli", "-m", "/m/ggml.bin", "-l", "uk"]
+
+
+def test_icloud_download_requested_before_transcribing(tmp_path):
+    box, client = make(tmp_path)
+    asked = []
+    box.downloader = asked.append
+    box.transcriber = FakeWhisper("")
+    (box.inbox / "a5.m4a").write_bytes(b"audio")
+    box.poll(); box.poll()
+    assert [p.name for p in asked] == ["a5.m4a"]

@@ -30,10 +30,22 @@ SETTLE_SECONDS = 2.0   # a file younger than this may still be being written
 GIVE_UP_AUDIO = 30 * 60   # keep retrying an unreadable audio file this long before setting it aside
 
 
+def _icloud_download(path: Path) -> None:
+    """Ask iCloud to fetch the file's content. A background agent opening a not-yet-downloaded
+    file only sees an empty/unreadable file, so the download has to be requested explicitly."""
+    brctl = shutil.which("brctl")
+    if not brctl:
+        return
+    try:
+        subprocess.run([brctl, "download", str(path)], capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("brctl download %s: %s", path.name, exc)
+
+
 class FolderInbox:
     def __init__(self, root: str | os.PathLike, db: str, parser: Any, clock=time.time,
                  inbox: str | os.PathLike | None = None, outbox: str | os.PathLike | None = None,
-                 transcriber: Any = None):
+                 transcriber: Any = None, downloader: Any = None):
         self.root = Path(root).expanduser()
         self.inbox = Path(inbox).expanduser() if inbox else self.root / "inbox"
         self.outbox = Path(outbox).expanduser() if outbox else self.root / "outbox"
@@ -43,6 +55,7 @@ class FolderInbox:
         self.db, self.parser, self.clock = db, parser, clock
         self.next_try: dict[int, float] = {}
         self.transcriber = transcriber
+        self.downloader = downloader or _icloud_download
         self.audio_failures: dict[str, tuple[int, float]] = {}   # id -> (failures, first failure)
         self.sizes: dict[str, int] = {}   # audio size seen on the previous pass
 
@@ -111,6 +124,7 @@ class FolderInbox:
             self._finish(path, ext_id, "Аудіо отримав, але розпізнавання голосу не налаштоване.")
             return None
         try:
+            self.downloader(path)   # a file from the iPhone may be only a placeholder so far
             text = self.transcriber.transcribe(path)
         except TranscribeError as exc:
             n, first = self.audio_failures.get(ext_id, (0, self.clock()))
