@@ -82,3 +82,53 @@ def test_custom_inbox_and_outbox_folders(tmp_path):
     assert r["status"] == "applied"
     assert (tmp_path / "Shortcuts" / "Atlas-replies" / "20261126-221500-123.txt").exists()
     assert (tmp_path / "Shortcuts" / "Atlas" / "processed" / "20261126-221500-123.txt").exists()
+
+
+class FakeWhisper:
+    def __init__(self, *results):
+        self.results = list(results)
+
+    def transcribe(self, path):
+        r = self.results.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+
+def test_audio_is_transcribed_then_understood(tmp_path):
+    box, client = make(tmp_path, [item("new_loop", "завтра звільнити рампу 31",
+                                       title="Звільнити рампу 31", due="tomorrow")])
+    box.transcriber = FakeWhisper("Завтра звільнити рампу 31.")
+    (box.inbox / "20261126-223000-001.m4a").write_bytes(b"audio")
+    [r] = box.poll()
+    assert r["status"] == "applied"
+    reply = (box.outbox / "20261126-223000-001.txt").read_text("utf-8")
+    assert reply.startswith("Почув: «Завтра звільнити рампу 31.»\n")
+    assert "Справа: «Звільнити рампу 31»" in reply
+    assert (box.done / "20261126-223000-001.m4a").exists()       # audio kept
+
+
+def test_audio_transcription_failure_retries_then_sets_aside(tmp_path):
+    from atlas.transcribe import TranscribeError
+    box, client = make(tmp_path)
+    box.transcriber = FakeWhisper(*[TranscribeError("boom")] * 3)
+    (box.inbox / "a1.m4a").write_bytes(b"audio")
+    assert box.poll() == [] and (box.inbox / "a1.m4a").exists()   # retried next time
+    box.poll()
+    box.poll()
+    assert (box.done / "a1.m4a").exists()
+    assert "Не вдалося розпізнати" in (box.outbox / "a1.txt").read_text("utf-8")
+    assert client.calls == []
+
+
+def test_whisper_command_line(tmp_path):
+    from atlas.transcribe import WhisperCpp
+    calls = []
+
+    def runner(cmd, **kw):
+        calls.append(cmd)
+        return type("P", (), {"returncode": 0, "stdout": "  Завтра  рампа 31 \n", "stderr": ""})()
+    w = WhisperCpp(binary="whisper-cli", model="/m/ggml.bin", runner=runner)
+    assert w.transcribe(tmp_path / "x.m4a") == "Завтра рампа 31"
+    assert calls[0][0] == "afconvert"
+    assert calls[1][:5] == ["whisper-cli", "-m", "/m/ggml.bin", "-l", "uk"]

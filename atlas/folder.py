@@ -22,6 +22,7 @@ from typing import Any
 from .core import Store
 from .pipeline import MAX_ATTEMPTS, process_message
 from .reply import describe
+from .transcribe import AUDIO_SUFFIXES, TranscribeError
 
 log = logging.getLogger("atlas.folder")
 SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
@@ -30,7 +31,8 @@ SETTLE_SECONDS = 2.0   # a file younger than this may still be being written
 
 class FolderInbox:
     def __init__(self, root: str | os.PathLike, db: str, parser: Any, clock=time.time,
-                 inbox: str | os.PathLike | None = None, outbox: str | os.PathLike | None = None):
+                 inbox: str | os.PathLike | None = None, outbox: str | os.PathLike | None = None,
+                 transcriber: Any = None):
         self.root = Path(root).expanduser()
         self.inbox = Path(inbox).expanduser() if inbox else self.root / "inbox"
         self.outbox = Path(outbox).expanduser() if outbox else self.root / "outbox"
@@ -39,6 +41,8 @@ class FolderInbox:
             d.mkdir(parents=True, exist_ok=True)
         self.db, self.parser, self.clock = db, parser, clock
         self.next_try: dict[int, float] = {}
+        self.transcriber = transcriber
+        self.audio_failures: dict[str, int] = {}
 
     def _request_downloads(self) -> None:
         """iCloud keeps not-yet-downloaded files as '.name.txt.icloud'; ask macOS to fetch them."""
@@ -50,7 +54,8 @@ class FolderInbox:
     def _ready_files(self) -> list[Path]:
         now = self.clock()
         files = [p for p in self.inbox.iterdir()
-                 if p.is_file() and p.suffix.lower() == ".txt" and not p.name.startswith(".")
+                 if p.is_file() and not p.name.startswith(".")
+                 and (p.suffix.lower() == ".txt" or p.suffix.lower() in AUDIO_SUFFIXES)
                  and now - p.stat().st_mtime >= SETTLE_SECONDS]
         return sorted(files, key=lambda p: (p.stat().st_mtime, p.name))
 
@@ -62,12 +67,19 @@ class FolderInbox:
         try:
             for path in self._ready_files():
                 ext_id = SAFE_ID.sub("_", path.stem)[:200]
-                text = path.read_text(encoding="utf-8", errors="replace").strip()
+                heard = ""
+                if path.suffix.lower() in AUDIO_SUFFIXES:
+                    text = self._transcribe(path, ext_id)
+                    if text is None:          # failed: file stays for a retry, or was set aside
+                        continue
+                    heard = f"Почув: «{text}»\n" if text else ""
+                else:
+                    text = path.read_text(encoding="utf-8", errors="replace").strip()
                 if not text:
                     self._finish(path, ext_id, "Порожнє повідомлення, нічого не записав.")
                     continue
                 inbox_id, _ = store.ingest("icloud", ext_id, text)   # durable from here on
-                results.append(self._run(store, inbox_id, ext_id))
+                results.append(self._run(store, inbox_id, ext_id, heard))
                 shutil.move(str(path), self.done / path.name)          # never deleted
             for msg in store.pending_inbox(max_attempts=MAX_ATTEMPTS):
                 if self.clock() >= self.next_try.get(msg["id"], 0):
@@ -76,7 +88,22 @@ class FolderInbox:
             store.close()
         return results
 
-    def _run(self, store: Store, inbox_id: int, ext_id: str) -> dict[str, Any]:
+    def _transcribe(self, path: Path, ext_id: str) -> str | None:
+        if self.transcriber is None:
+            self._finish(path, ext_id, "Аудіо отримав, але розпізнавання голосу не налаштоване.")
+            return None
+        try:
+            text = self.transcriber.transcribe(path)
+        except TranscribeError as exc:
+            n = self.audio_failures[ext_id] = self.audio_failures.get(ext_id, 0) + 1
+            log.warning("transcribe %s failed (%s): %s", path.name, n, exc)
+            if n >= 3:
+                self._finish(path, ext_id, "Не вдалося розпізнати аудіо. Файл збережено в processed.")
+            return None
+        self.audio_failures.pop(ext_id, None)
+        return text
+
+    def _run(self, store: Store, inbox_id: int, ext_id: str, heard: str = "") -> dict[str, Any]:
         try:
             result = process_message(store, self.parser, inbox_id)
         except Exception as exc:  # keep going with other messages
@@ -88,7 +115,7 @@ class FolderInbox:
             self.next_try[inbox_id] = self.clock() + 60 * 2 ** attempts
         else:
             self.next_try.pop(inbox_id, None)
-        self._write_reply(ext_id, describe(result, store))
+        self._write_reply(ext_id, heard + describe(result, store))
         return result
 
     def _write_reply(self, ext_id: str, text: str) -> None:
@@ -134,7 +161,12 @@ def main(argv: list[str] | None = None) -> int:
     else:
         from .understand import ClaudeCodeParser
         parser = ClaudeCodeParser(model=os.environ.get("ATLAS_CC_MODEL", "opus"))
-    box = FolderInbox(args.dir, str(db), parser, inbox=args.inbox, outbox=args.outbox)
+    transcriber = None
+    if os.environ.get("ATLAS_WHISPER_MODEL"):
+        from .transcribe import WhisperCpp
+        transcriber = WhisperCpp()
+    box = FolderInbox(args.dir, str(db), parser, inbox=args.inbox, outbox=args.outbox,
+                      transcriber=transcriber)
     if args.once:
         for r in box.poll():
             print(r.get("inbox_id"), r.get("status"))
