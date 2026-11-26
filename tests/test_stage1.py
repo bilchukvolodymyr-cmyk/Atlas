@@ -353,3 +353,47 @@ def test_real_sdk_serialises_the_request(store):
     assert body["fallbacks"] == "default" and "server-side-fallback-2026-07-01" in sent["beta"]
     assert body["output_config"]["format"]["type"] == "json_schema"
     assert body["output_config"]["effort"] == "medium"
+
+
+# ------------------------------------------------------------------ Claude Code CLI backend
+from atlas.understand import ClaudeCodeParser  # noqa: E402
+
+
+class FakeProc(SimpleNamespace):
+    pass
+
+
+def cc(stdout, returncode=0, record=None):
+    def runner(cmd, **kw):
+        if record is not None:
+            record.append((cmd, kw))
+        if isinstance(stdout, Exception):
+            raise stdout
+        return FakeProc(returncode=returncode, stdout=stdout, stderr="boom")
+    return ClaudeCodeParser(executable="claude", runner=runner)
+
+
+def test_claude_code_backend_flow(store):
+    calls = []
+    out = json.dumps({"type": "result", "is_error": False, "session_id": "s1",
+                      "structured_output": {"items": [item("idea", "QR на локаціях",
+                                                           title="QR на локаціях")]}})
+    inbox_id, _ = store.ingest("t", "1", "Ідея: QR на локаціях", received_at=NOW_UTC)
+    res = process_message(store, cc(out, record=calls), inbox_id)
+    assert res["status"] == "applied"
+    cmd, kw = calls[0]
+    assert cmd[:2] == ["claude", "-p"] and cmd[cmd.index("--tools") + 1] == ""
+    assert "--json-schema" in cmd and "Ідея: QR на локаціях" in kw["input"]
+    assert store.llm_runs(inbox_id)[0]["model"] == "claude-code:opus"
+
+
+def test_claude_code_result_text_fallback_and_errors(store):
+    text_only = json.dumps({"is_error": False, "result": "```json\n{\"items\": []}\n```"})
+    assert cc(text_only).parse("x", "ctx").items == []
+    for parser, status in [(cc("", returncode=1), "api_error"),
+                           (cc(FileNotFoundError("claude")), "api_error"),
+                           (cc(json.dumps({"is_error": True, "result": "limit"})), "api_error"),
+                           (cc("not json"), "bad_output")]:
+        with pytest.raises(Exception) as e:
+            parser.parse("x", "ctx")
+        assert e.value.status == status

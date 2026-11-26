@@ -208,8 +208,13 @@ def main(argv: list[str] | None = None) -> int:
     token = os.environ.get("ATLAS_TOKEN", "")
 
     def factory():
-        from .understand import ClaudeParser
-        return ClaudeParser(model=args.model, effort=args.effort)
+        # claude-code: the user's Claude subscription via the `claude` CLI (no API payment)
+        # api: Anthropic API with ANTHROPIC_API_KEY (paid per call)
+        if os.environ.get("ATLAS_BACKEND", "claude-code") == "api":
+            from .understand import ClaudeParser
+            return ClaudeParser(model=args.model, effort=args.effort)
+        from .understand import ClaudeCodeParser
+        return ClaudeCodeParser(model=os.environ.get("ATLAS_CC_MODEL", "opus"))
 
     serve(Atlas(args.db, token, factory), args.host, args.port)
     return 0

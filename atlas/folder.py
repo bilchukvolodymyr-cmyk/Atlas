@@ -1,0 +1,143 @@
+"""Folder mode: messages arrive as files (e.g. iCloud Drive written by an iPhone Shortcut).
+
+    ATLAS_DIR/inbox/<id>.txt      written by the phone; <id> is the unique message id
+    ATLAS_DIR/outbox/<id>.txt     Atlas's answer (what it wrote down)
+    ATLAS_DIR/inbox/processed/    handled files are moved here, never deleted
+
+Works when the Mac was asleep: files wait in iCloud and are handled on wake.
+Run:  python3 -m atlas.folder --dir ~/Library/Mobile\\ Documents/com~apple~CloudDocs/Atlas
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+import re
+import shutil
+import subprocess
+import time
+from pathlib import Path
+from typing import Any
+
+from .core import Store
+from .pipeline import MAX_ATTEMPTS, process_message
+from .reply import describe
+
+log = logging.getLogger("atlas.folder")
+SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
+SETTLE_SECONDS = 2.0   # a file younger than this may still be being written
+
+
+class FolderInbox:
+    def __init__(self, root: str | os.PathLike, db: str, parser: Any, clock=time.time):
+        self.root = Path(root).expanduser()
+        self.inbox, self.outbox = self.root / "inbox", self.root / "outbox"
+        self.done = self.inbox / "processed"
+        for d in (self.inbox, self.outbox, self.done):
+            d.mkdir(parents=True, exist_ok=True)
+        self.db, self.parser, self.clock = db, parser, clock
+        self.next_try: dict[int, float] = {}
+
+    def _request_downloads(self) -> None:
+        """iCloud keeps not-yet-downloaded files as '.name.txt.icloud'; ask macOS to fetch them."""
+        brctl = shutil.which("brctl")
+        for ph in self.inbox.glob(".*.icloud"):
+            if brctl:
+                subprocess.run([brctl, "download", str(ph)], capture_output=True, timeout=30)
+
+    def _ready_files(self) -> list[Path]:
+        now = self.clock()
+        files = [p for p in self.inbox.iterdir()
+                 if p.is_file() and p.suffix.lower() == ".txt" and not p.name.startswith(".")
+                 and now - p.stat().st_mtime >= SETTLE_SECONDS]
+        return sorted(files, key=lambda p: (p.stat().st_mtime, p.name))
+
+    def poll(self) -> list[dict[str, Any]]:
+        """One pass: take new files, then retry messages that failed earlier."""
+        self._request_downloads()
+        results = []
+        store = Store(self.db)
+        try:
+            for path in self._ready_files():
+                ext_id = SAFE_ID.sub("_", path.stem)[:200]
+                text = path.read_text(encoding="utf-8", errors="replace").strip()
+                if not text:
+                    self._finish(path, ext_id, "Порожнє повідомлення, нічого не записав.")
+                    continue
+                inbox_id, _ = store.ingest("icloud", ext_id, text)   # durable from here on
+                results.append(self._run(store, inbox_id, ext_id))
+                shutil.move(str(path), self.done / path.name)          # never deleted
+            for msg in store.pending_inbox(max_attempts=MAX_ATTEMPTS):
+                if self.clock() >= self.next_try.get(msg["id"], 0):
+                    results.append(self._run(store, msg["id"], msg["external_id"]))
+        finally:
+            store.close()
+        return results
+
+    def _run(self, store: Store, inbox_id: int, ext_id: str) -> dict[str, Any]:
+        try:
+            result = process_message(store, self.parser, inbox_id)
+        except Exception as exc:  # keep going with other messages
+            log.exception("inbox %s", inbox_id)
+            store.mark_failed(inbox_id, f"{type(exc).__name__}: {exc}")
+            result = {"inbox_id": inbox_id, "status": "retry_later", "error": str(exc)}
+        if result["status"] == "retry_later":
+            attempts = (store.inbox(inbox_id) or {}).get("attempts", 1)
+            self.next_try[inbox_id] = self.clock() + 60 * 2 ** attempts
+        else:
+            self.next_try.pop(inbox_id, None)
+        self._write_reply(ext_id, describe(result, store))
+        return result
+
+    def _write_reply(self, ext_id: str, text: str) -> None:
+        tmp = self.outbox / f".{ext_id}.tmp"
+        tmp.write_text(text + "\n", encoding="utf-8")
+        os.replace(tmp, self.outbox / f"{ext_id}.txt")   # atomic: phone never sees half a file
+
+    def _finish(self, path: Path, ext_id: str, reply: str) -> None:
+        self._write_reply(ext_id, reply)
+        shutil.move(str(path), self.done / path.name)
+
+    def run_forever(self, interval: float = 20.0, backup_dir: Path | None = None) -> None:
+        log.info("watching %s", self.inbox)
+        last_backup = 0.0
+        while True:
+            try:
+                self.poll()
+                if backup_dir and self.clock() - last_backup > 24 * 3600:
+                    from .backup import backup
+                    log.info("backup %s", backup(self.db, str(backup_dir), keep=30))
+                    last_backup = self.clock()
+            except Exception:
+                log.exception("poll failed")
+            time.sleep(interval)
+
+
+def main(argv: list[str] | None = None) -> int:
+    icloud = "~/Library/Mobile Documents/com~apple~CloudDocs/Atlas"
+    p = argparse.ArgumentParser(prog="atlas-folder")
+    p.add_argument("--dir", default=os.environ.get("ATLAS_DIR", icloud))
+    p.add_argument("--db", default=os.environ.get("ATLAS_DB", "~/Atlas/atlas.db"))
+    p.add_argument("--interval", type=float, default=20.0)
+    p.add_argument("--once", action="store_true", help="one pass, then exit")
+    args = p.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    db = Path(args.db).expanduser()
+    db.parent.mkdir(parents=True, exist_ok=True)
+    if os.environ.get("ATLAS_BACKEND", "claude-code") == "api":
+        from .understand import ClaudeParser
+        parser = ClaudeParser()
+    else:
+        from .understand import ClaudeCodeParser
+        parser = ClaudeCodeParser(model=os.environ.get("ATLAS_CC_MODEL", "opus"))
+    box = FolderInbox(args.dir, str(db), parser)
+    if args.once:
+        for r in box.poll():
+            print(r.get("inbox_id"), r.get("status"))
+        return 0
+    box.run_forever(args.interval, backup_dir=db.parent / "backups")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

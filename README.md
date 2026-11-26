@@ -4,6 +4,8 @@
 Етап 1: розбір вільного тексту через Claude з перевіркою кодом.
 Етап 2: HTTP-сервер для iPhone (`atlas/server.py`), встановлення на VPS (`deploy/`),
 інструкції: [сервер](docs/server.md), [iPhone](docs/iphone.md).
+Без оплати: режим «папка» — iPhone → iCloud Drive → MacBook (`atlas/folder.py`, `deploy/mac/install.sh`,
+[інструкція](docs/iphone-icloud.md)); Claude через Claude Code CLI з підпискою (`ClaudeCodeParser`).
 Дизайн: https://claude.ai/artifact/GfvFEhzhXDEmX1JeNqxG46
 
 ## Що гарантує ядро (перевірено тестами)
@@ -89,7 +91,8 @@ python3 evals/run_eval.py           # 40 реальних фраз проти с
 - `atlas/pipeline.py` — inbox → Claude → перевірка → apply, повтори, запасний шлях.
 - `atlas/server.py`, `atlas/reply.py`, `atlas/backup.py` — сервер, відповідь людською мовою, копії бази.
 - `deploy/` — install.sh, systemd, Caddy (HTTPS).
-- `tests/` — 66 тестів (Claude замінено імітацією; один тест перевіряє справжній SDK без мережі).
+- `atlas/folder.py` — режим iCloud Drive для Mac.
+- `tests/` — 73 тести (Claude замінено імітацією; один тест перевіряє справжній SDK без мережі).
 - `evals/phrases.jsonl`, `evals/run_eval.py` — живий тест на 40 фразах.
 
 ## Ще не зроблено (наступні етапи)

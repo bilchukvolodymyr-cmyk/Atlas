@@ -495,3 +495,61 @@ def _about_ok(about: str, refs: dict[str, str], loops: dict, ideas: dict) -> boo
     if not m:
         return False
     return int(m[2]) in (loops if m[1] == "loop" else ideas)
+
+
+class ClaudeCodeParser:
+    """Same job as ClaudeParser, but through the Claude Code CLI (`claude -p`) logged in with
+    the user's Claude subscription: no API key and no per-call payment. Uses the subscription's
+    usage limits instead. `runner` is injectable for tests."""
+
+    def __init__(self, model: str = "opus", timeout: float = 180.0, executable: str | None = None,
+                 runner: Any = None):
+        import shutil
+        import subprocess
+        self.model, self.timeout = model, timeout
+        self.executable = executable or shutil.which("claude") or "claude"
+        self.runner = runner or subprocess.run
+
+    def command(self) -> list[str]:
+        return [self.executable, "-p",
+                "--output-format", "json",
+                "--json-schema", json.dumps(OUTPUT_SCHEMA, ensure_ascii=False),
+                "--system-prompt", SYSTEM_PROMPT,
+                "--model", self.model,
+                "--tools", "",                 # no file, shell or web access: text in, JSON out
+                "--strict-mcp-config",          # no MCP servers
+                "--setting-sources", "",        # ignore local settings, hooks and CLAUDE.md
+                "--no-session-persistence"]
+
+    def parse(self, text: str, context: str, feedback: str | None = None) -> ParseResult:
+        content = f"<context>\n{context}\n</context>\n<message>\n{text}\n</message>"
+        if feedback:
+            content += f"\n<previous_attempt_error>\n{feedback}\n</previous_attempt_error>"
+        content += "\nReturn only the JSON object with `items`."
+        try:
+            proc = self.runner(self.command(), input=content, capture_output=True, text=True,
+                               encoding="utf-8", timeout=self.timeout)
+        except Exception as exc:  # not installed, timeout, killed
+            raise ParseError("api_error", f"claude CLI: {type(exc).__name__}: {exc}") from exc
+        if proc.returncode != 0:
+            raise ParseError("api_error", f"claude CLI exit {proc.returncode}: "
+                                          f"{(proc.stderr or proc.stdout or '')[:300]}")
+        try:
+            envelope = json.loads(proc.stdout)
+        except ValueError as exc:
+            raise ParseError("bad_output", f"CLI output is not JSON: {exc}", proc.stdout[:2000]) from exc
+        if envelope.get("is_error"):
+            raise ParseError("api_error", f"claude CLI error: {str(envelope.get('result'))[:300]}")
+        data = envelope.get("structured_output")
+        if data is None:
+            raw = envelope.get("result") or ""
+            m = re.search(r"\{.*\}", raw, re.S)
+            try:
+                data = json.loads(m.group(0) if m else raw)
+            except ValueError as exc:
+                raise ParseError("bad_output", f"result is not JSON: {exc}", raw[:2000]) from exc
+        items = data.get("items") if isinstance(data, dict) else None
+        if not isinstance(items, list) or not all(isinstance(i, dict) for i in items):
+            raise ParseError("bad_output", "no items list", data)
+        return ParseResult(items, f"claude-code:{self.model}", envelope.get("session_id"),
+                           envelope.get("usage"))
