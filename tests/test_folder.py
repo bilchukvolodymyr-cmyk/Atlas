@@ -100,6 +100,7 @@ def test_audio_is_transcribed_then_understood(tmp_path):
                                        title="Звільнити рампу 31", due="tomorrow")])
     box.transcriber = FakeWhisper("Завтра звільнити рампу 31.")
     (box.inbox / "20261126-223000-001.m4a").write_bytes(b"audio")
+    assert box.poll() == []                     # first sight: size not yet known to be stable
     [r] = box.poll()
     assert r["status"] == "applied"
     reply = (box.outbox / "20261126-223000-001.txt").read_text("utf-8")
@@ -111,14 +112,89 @@ def test_audio_is_transcribed_then_understood(tmp_path):
 def test_audio_transcription_failure_retries_then_sets_aside(tmp_path):
     from atlas.transcribe import TranscribeError
     box, client = make(tmp_path)
-    box.transcriber = FakeWhisper(*[TranscribeError("boom")] * 3)
+    now = [time.time() + 10]
+    box.clock = lambda: now[0]
+    box.transcriber = FakeWhisper(*[TranscribeError("boom")] * 4)
     (box.inbox / "a1.m4a").write_bytes(b"audio")
-    assert box.poll() == [] and (box.inbox / "a1.m4a").exists()   # retried next time
-    box.poll()
+    for _ in range(4):                                            # 1 sighting + 3 quick failures
+        assert box.poll() == []
+    assert (box.inbox / "a1.m4a").exists()                        # 3 fast failures: still waiting
+    now[0] += 6 * 60
     box.poll()
     assert (box.done / "a1.m4a").exists()
     assert "Не вдалося розпізнати" in (box.outbox / "a1.txt").read_text("utf-8")
     assert client.calls == []
+
+
+def test_audio_still_downloading_waits_long(tmp_path):
+    from atlas.transcribe import NotReady
+    box, client = make(tmp_path, [item("idea", "рампа 31", title="Рампа 31")])
+    now = [time.time() + 10]
+    box.clock = lambda: now[0]
+    box.transcriber = FakeWhisper(*[NotReady("wht?")] * 5, "Ідея: рампа 31")
+    (box.inbox / "a2.m4a").write_bytes(b"audio")
+    box.poll()
+    for _ in range(5):
+        now[0] += 5 * 60                                          # 25 min of "not ready"
+        assert box.poll() == [] and (box.inbox / "a2.m4a").exists()
+    [r] = box.poll()
+    assert r["status"] == "applied"
+    assert (box.outbox / "a2.txt").read_text("utf-8").startswith("Почув: «Ідея: рампа 31»")
+
+
+def test_growing_audio_file_is_not_taken(tmp_path):
+    box, client = make(tmp_path)
+    box.transcriber = FakeWhisper()                               # must not be called
+    f = box.inbox / "a3.m4a"
+    f.write_bytes(b"a")
+    box.poll()
+    f.write_bytes(b"ab")                                          # still arriving
+    assert box.poll() == [] and f.exists()
+
+
+def test_silent_audio_is_not_recorded(tmp_path):
+    box, client = make(tmp_path)
+    box.transcriber = FakeWhisper("")
+    (box.inbox / "a4.m4a").write_bytes(b"audio")
+    box.poll()
+    assert box.poll() == []
+    assert "запис порожній" in (box.outbox / "a4.txt").read_text("utf-8")
+    assert (box.done / "a4.m4a").exists() and client.calls == []
+
+
+def test_whisper_silence_and_stock_phrases(tmp_path):
+    import array, wave
+    from atlas.transcribe import WhisperCpp, is_hallucination
+    assert is_hallucination("Дякую за перегляд!") and is_hallucination(" ... ")
+    assert not is_hallucination("Дякую, рампа 31 вільна")
+
+    def make_wav(name, seconds, amp):
+        path = tmp_path / name
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+            w.writeframes(array.array("h", [amp, -amp] * int(8000 * seconds)).tobytes())
+        return path
+    calls = []
+
+    def runner(cmd, **kw):
+        calls.append(cmd)
+        return type("P", (), {"returncode": 0, "stdout": "Рампа 31", "stderr": ""})()
+    w = WhisperCpp(binary="whisper-cli", model="/m.bin", runner=runner)
+    assert w.transcribe(make_wav("quiet.wav", 2.1, 461)) == "" and calls == []
+    assert w.transcribe(make_wav("short.wav", 0.3, 9000)) == "" and calls == []
+    assert w.transcribe(make_wav("voice.wav", 3, 9000)) == "Рампа 31" and len(calls) == 1
+
+
+def test_afconvert_cannot_open_means_not_ready(tmp_path):
+    import pytest
+    from atlas.transcribe import NotReady, WhisperCpp
+
+    def runner(cmd, **kw):
+        return type("P", (), {"returncode": 1, "stdout": "",
+                              "stderr": "Error: Couldn't open input file ('wht?')"})()
+    (tmp_path / "x.m4a").write_bytes(b"audio")
+    with pytest.raises(NotReady):
+        WhisperCpp(binary="w", model="/m.bin", runner=runner).transcribe(tmp_path / "x.m4a")
 
 
 def test_whisper_command_line(tmp_path):
@@ -129,6 +205,7 @@ def test_whisper_command_line(tmp_path):
         calls.append(cmd)
         return type("P", (), {"returncode": 0, "stdout": "  Завтра  рампа 31 \n", "stderr": ""})()
     w = WhisperCpp(binary="whisper-cli", model="/m/ggml.bin", runner=runner)
+    (tmp_path / "x.m4a").write_bytes(b"audio")
     assert w.transcribe(tmp_path / "x.m4a") == "Завтра рампа 31"
     assert calls[0][0] == "afconvert"
     assert calls[1][:5] == ["whisper-cli", "-m", "/m/ggml.bin", "-l", "uk"]

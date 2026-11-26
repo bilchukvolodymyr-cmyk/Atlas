@@ -22,11 +22,12 @@ from typing import Any
 from .core import Store
 from .pipeline import MAX_ATTEMPTS, process_message
 from .reply import describe
-from .transcribe import AUDIO_SUFFIXES, TranscribeError
+from .transcribe import AUDIO_SUFFIXES, NotReady, TranscribeError
 
 log = logging.getLogger("atlas.folder")
 SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
 SETTLE_SECONDS = 2.0   # a file younger than this may still be being written
+GIVE_UP_AUDIO = 30 * 60   # keep retrying an unreadable audio file this long before setting it aside
 
 
 class FolderInbox:
@@ -42,7 +43,8 @@ class FolderInbox:
         self.db, self.parser, self.clock = db, parser, clock
         self.next_try: dict[int, float] = {}
         self.transcriber = transcriber
-        self.audio_failures: dict[str, int] = {}
+        self.audio_failures: dict[str, tuple[int, float]] = {}   # id -> (failures, first failure)
+        self.sizes: dict[str, int] = {}   # audio size seen on the previous pass
 
     def _request_downloads(self) -> None:
         """iCloud keeps not-yet-downloaded files as '.name.txt.icloud'; ask macOS to fetch them."""
@@ -56,8 +58,19 @@ class FolderInbox:
         files = [p for p in self.inbox.iterdir()
                  if p.is_file() and not p.name.startswith(".")
                  and (p.suffix.lower() == ".txt" or p.suffix.lower() in AUDIO_SUFFIXES)
-                 and now - p.stat().st_mtime >= SETTLE_SECONDS]
+                 and now - p.stat().st_mtime >= SETTLE_SECONDS
+                 and self._size_settled(p)]
         return sorted(files, key=lambda p: (p.stat().st_mtime, p.name))
+
+    def _size_settled(self, p: Path) -> bool:
+        """Audio from iCloud can show up before it is complete: take it only once its size
+        is the same on two passes in a row."""
+        if p.suffix.lower() not in AUDIO_SUFFIXES:
+            return True
+        size = p.stat().st_size
+        previous = self.sizes.get(p.name)
+        self.sizes[p.name] = size
+        return size > 0 and previous == size
 
     def poll(self) -> list[dict[str, Any]]:
         """One pass: take new files, then retry messages that failed earlier."""
@@ -72,7 +85,12 @@ class FolderInbox:
                     text = self._transcribe(path, ext_id)
                     if text is None:          # failed: file stays for a retry, or was set aside
                         continue
-                    heard = f"Почув: «{text}»\n" if text else ""
+                    self.sizes.pop(path.name, None)
+                    if not text:
+                        self._finish(path, ext_id, "Не почув слів: запис порожній або дуже тихий. "
+                                                   "Нічого не записав.")
+                        continue
+                    heard = f"Почув: «{text}»\n"
                 else:
                     text = path.read_text(encoding="utf-8", errors="replace").strip()
                 if not text:
@@ -95,9 +113,17 @@ class FolderInbox:
         try:
             text = self.transcriber.transcribe(path)
         except TranscribeError as exc:
-            n = self.audio_failures[ext_id] = self.audio_failures.get(ext_id, 0) + 1
-            log.warning("transcribe %s failed (%s): %s", path.name, n, exc)
-            if n >= 3:
+            n, first = self.audio_failures.get(ext_id, (0, self.clock()))
+            n += 1
+            self.audio_failures[ext_id] = (n, first)
+            waited = self.clock() - first
+            log.warning("transcribe %s failed (%s, %.0fs): %s", path.name, n, waited, exc)
+            # a file still arriving from iCloud only gives up after a long wait; a real error
+            # after 3 tries spread over at least 5 minutes
+            limit = GIVE_UP_AUDIO if isinstance(exc, NotReady) else 5 * 60
+            if n >= 3 and waited >= limit:
+                self.audio_failures.pop(ext_id, None)
+                self.sizes.pop(path.name, None)
                 self._finish(path, ext_id, "Не вдалося розпізнати аудіо. Файл збережено в processed.")
             return None
         self.audio_failures.pop(ext_id, None)
