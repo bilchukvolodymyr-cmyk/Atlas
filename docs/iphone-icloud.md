@@ -9,22 +9,22 @@ Mac спить — файли чекають в iCloud; без інтернет�
 
 ## Команда «Atlas» (записати)
 
-Назви дій залежать від мови iPhone: тут італійська, у дужках англійська.
-Шукати дії зручно рядком пошуку внизу («input», «data», «salva file», «notifica»).
+Назви дій залежать від мови iPhone, тому тут — англійська назва і слово для пошуку
+(рядок пошуку дій унизу екрана).
 
-1. «Comandi» → «+» → назва **Atlas**.
-2. **Richiedi input** (Ask for Input): tipo Testo, підказка «Atlas». Під час запуску натисни
-   мікрофон на клавіатурі й диктуй (надійніше, ніж «Detta testo» / Dictate Text).
-3. **Data attuale** (Current Date) → **Formatta data** (Format Date): формат «Personalizzato»
-   `yyyyMMdd-HHmmss-SSS`. Це назва файлу й унікальний номер повідомлення.
-4. **Salva file** (Save File): вхід = Input fornito; «Chiedi dove salvare» — вимкнено;
-   шлях `Atlas/inbox/` + Data formattata + `.txt`.
-5. **Mostra notifica** (Show Notification): «Записано в Atlas».
+1. Команди → «+» → назва **Atlas**.
+2. Ask for Input — пошук «ввід» / «запит»; тип — текст, підказка «Atlas». Під час запуску натисни
+   мікрофон на клавіатурі й диктуй. (Або Dictate Text — пошук «дикт».)
+3. Current Date — пошук «дата»; потім Format Date: власний формат `yyyyMMdd-HHmmss-SSS`.
+   Це назва файлу й унікальний номер повідомлення.
+4. Save File — пошук «зберегти файл»: вхід = введений текст; «запитувати, де зберегти» — вимкнено;
+   шлях `Atlas/inbox/` + форматована дата + `.txt`.
+5. Show Notification — пошук «сповіщ»: «Записано в Atlas».
 
 ## Команда «Atlas відповіді» (подивитися, що записано)
 
-1. **Ottieni contenuti della cartella** (Get Contents of Folder): `iCloud Drive/Atlas/outbox`.
-2. **Filtra file** (Filter Files): сортувати за датою зміни, від нових; обмеження 5.
-3. **Ripeti con ognuno** (Repeat with Each) → **Ottieni testo dall'input** (Get Text from Input) → **Mostra risultato** (Show Result).
+1. Get Contents of Folder (пошук «папк»): `iCloud Drive/Atlas/outbox`.
+2. Filter Files (пошук «фільтр»): сортувати за датою зміни, від нових; обмеження 5.
+3. Repeat with Each → Get Text from Input → Show Result (пошук «повтор», «текст», «результат»).
 
 Запуск: кнопка дії iPhone 16 (Параметри → Кнопка дії → Команда → Atlas), Siri, віджет.
