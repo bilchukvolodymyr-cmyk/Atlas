@@ -112,6 +112,8 @@ today | tomorrow | day_after_tomorrow | weekday:mon..sun | this_week | next_week
 | in_days:N | in_weeks:N | date:YYYY-MM-DD | date:DD.MM | day:DD, optionally with "@HH:MM".
 "до кінця місяця" -> end_of_month, "в суботу" -> weekday:sat, "на наступний тиждень" -> next_week.
 
+Dictation errors are common. Warehouse vocabulary: рампа / ribalta (loading dock, e.g. "рампа 31", "Ribalta 37"), локація / location codes like 3Q.15.004.01, 2T54, 2O 06, 2F08, 2V30, 1B.75, Polo 1 / Polo 2, Agenzia, Cooperativa, CrossChex, етикетки, палети, навантажувач, ретрак, Roberto Poli. When a word looks like a dictation error (e.g. "риба 31" where "рампа 31" is likely), never silently correct it and never record nonsense as a fact: emit an `ask` item ("Ти мав на увазі «рампа 31»?") and, if the rest is clear, the item with the doubtful words kept exactly as dictated. If the whole message is unintelligible, emit only one `ask`.
+
 One message may contain several items (e.g. three tasks from the same manager, or numbers \
 for trucks and workers). Do not duplicate an open loop that already exists: update it instead. \
 Greetings, filler and thanks produce no items."""
