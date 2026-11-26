@@ -154,6 +154,39 @@ class Store:
             "UPDATE inbox SET status='failed', attempts=attempts+1, error=? WHERE id=? AND status!='done'",
             (f"{type(exc).__name__}: {exc}", inbox_id))
 
+    def mark_failed(self, inbox_id: int, error: str) -> None:
+        """Record a failure that happened outside apply() (e.g. the Claude call)."""
+        self._mark_failed(inbox_id, RuntimeError(error))
+
+    def inbox(self, inbox_id: int) -> dict[str, Any] | None:
+        return _row(self.conn.execute("SELECT * FROM inbox WHERE id=?", (inbox_id,)).fetchone())
+
+    def log_llm_run(self, inbox_id: int, status: str, *, model: str | None = None,
+                    request_id: str | None = None, output: Any = None, report: Any = None,
+                    error: str | None = None, usage: Any = None) -> None:
+        dump = lambda v: None if v is None else json.dumps(v, ensure_ascii=False, default=str)
+        self.conn.execute(
+            "INSERT INTO llm_runs(inbox_id, at, model, request_id, status, output, report, error, usage) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (inbox_id, self.clock(), model, request_id, status, dump(output), dump(report), error,
+             dump(usage)))
+
+    def llm_runs(self, inbox_id: int) -> list[dict[str, Any]]:
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM llm_runs WHERE inbox_id=? ORDER BY id", (inbox_id,))]
+
+    def open_questions(self) -> list[dict[str, Any]]:
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM questions WHERE status='open' ORDER BY id")]
+
+    def active_ideas(self, limit: int = 30) -> list[dict[str, Any]]:
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM ideas WHERE status NOT IN ('done','dropped') "
+            "ORDER BY last_touched_at DESC, id DESC LIMIT ?", (limit,))]
+
+    def metric_names(self) -> list[str]:
+        return [r[0] for r in self.conn.execute("SELECT DISTINCT name FROM metrics ORDER BY name")]
+
     # ------------------------------------------------------------------ reads
     def loop(self, loop_id: int) -> dict[str, Any] | None:
         return _row(self.conn.execute("SELECT * FROM loops WHERE id=?", (loop_id,)).fetchone())

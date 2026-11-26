@@ -1,6 +1,7 @@
-# Atlas — етап 0: ядро
+# Atlas — робоча пам'ять
 
-Сховище без LLM: записи, відкриті цикли, ідеї, щоденні показники, журнал подій.
+Етап 0: сховище (записи, відкриті цикли, ідеї, щоденні показники, журнал подій).
+Етап 1: розбір вільного тексту через Claude з перевіркою кодом.
 Дизайн: https://claude.ai/artifact/GfvFEhzhXDEmX1JeNqxG46
 
 ## Що гарантує ядро (перевірено тестами)
@@ -41,16 +42,54 @@ python3 -m atlas rebuild             # відновити стан з журна
 
 `--id <uuid>` робить повтор команди безпечним: той самий id = той самий запис.
 
+## Етап 1: розбір тексту через Claude
+
+Claude нічого не пише в базу. Він повертає «пункти» (що, на його думку, є в повідомленні),
+кожен із дослівною цитатою. Код перевіряє кожен пункт і лише тоді передає дії в ядро.
+
+| Правило | Тест |
+| --- | --- |
+| Цитати немає в повідомленні → пункт відкинуто | `test_invented_quote_is_rejected_and_invented_name_dropped` |
+| Ім'я (хто доручив / на кого чекаємо) не з повідомлення → поле не записується | той самий |
+| Число показника не стоїть у цитаті → не записується, Atlas питає | `test_daily_metrics_and_number_check` |
+| Дати рахує код (Europe/Rome), не Claude: завтра / в суботу / наступний тиждень / кінець місяця | `test_dates_from_thursday_26_november`, `test_three_tasks_from_roberto_with_different_deadlines` |
+| «У четвер», сказане в четвер, → справа без строку + питання | `test_ambiguous_date_creates_loop_without_due_and_asks` |
+| «Зробив» → перевірка + питання; закриття лише наступним повідомленням-підтвердженням | `test_done_needs_confirmation_in_a_later_message` |
+| Повторна доставка не викликає Claude вдруге | `test_redelivery_does_not_call_claude_again` |
+| Збій мережі/API → повідомлення чекає і обробляється пізніше (до 5 спроб) | `test_api_error_keeps_message_and_retries_later` |
+| Відмова моделі / зламана відповідь → текст зберігається нотаткою + питання | `test_refusal_keeps_message_as_note_with_question` |
+| Ядро відхилило дію → одна повторна спроба з описом помилки, далі нотатка | `test_apply_error_gets_one_retry_with_feedback` |
+| Кожен виклик Claude записаний у `llm_runs` (відповідь, що відкинуто і чому, токени) | `test_api_error_keeps_message_and_retries_later` |
+
+Нагадування: справа на день — о 18:00 напередодні (або о 7:00 того дня, якщо пізно);
+на тиждень — у понеділок о 7:00; до кінця місяця — за 3 дні о 7:00.
+
+Модель `claude-opus-5-5`, structured outputs (JSON-схема), `effort=medium`,
+серверні запасні моделі при відмові (`fallbacks="default"`).
+
+```
+pip install anthropic
+export ANTHROPIC_API_KEY=...
+python3 -m atlas say "Роберто дав на завтра підготувати місце біля рампи 31"
+python3 -m atlas questions
+python3 -m atlas process            # обробити все, що чекає в inbox
+python3 evals/run_eval.py           # 40 реальних фраз проти справжнього Claude (платно)
+```
+
 ## Структура
 
 - `atlas/schema.sql` — таблиці (inbox, entries, loops, ideas, metrics, questions, events).
 - `atlas/core.py` — `Store`: `ingest()`, `apply(inbox_id, actions)`, `rebuild()`, `backup()`.
   `apply` приймає список дій — той самий формат, який на етапі 1 видаватиме Claude.
 - `atlas/cli.py` — командний рядок.
-- `tests/test_core.py` — 32 тести.
+- `atlas/understand.py` — схема відповіді Claude, промпт, перевірка цитат, перетворення на дії.
+- `atlas/dates.py` — «завтра / в суботу / кінець місяця» → дата; правила нагадувань.
+- `atlas/pipeline.py` — inbox → Claude → перевірка → apply, повтори, запасний шлях.
+- `tests/` — 57 тестів (Claude замінено імітацією; один тест перевіряє справжній SDK без мережі).
+- `evals/phrases.jsonl`, `evals/run_eval.py` — живий тест на 40 фразах.
 
 ## Ще не зроблено (наступні етапи)
 
-Розбір тексту через Claude (етап 1), сервер і iPhone (етап 2), пошук і фото (етап 3),
-нагадування (етап 4). Перетворення «завтра / в суботу» на дату, повторювані справи,
+Сервер і iPhone (етап 2), пошук і фото (етап 3),
+надсилання нагадувань (етап 4; час уже рахується). Повторювані справи,
 таблиці attachments/topics/links — теж пізніше.

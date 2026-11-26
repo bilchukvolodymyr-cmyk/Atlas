@@ -91,8 +91,31 @@ def cmd_rebuild(store: Store, args: argparse.Namespace) -> dict:
     return {"counts": counts, "identical": same, "integrity_ok": store.integrity_ok()}
 
 
+def _parser(args: argparse.Namespace):
+    from .understand import ClaudeParser
+    return ClaudeParser(model=args.model, effort=args.effort)
+
+
+def cmd_say(store: Store, args: argparse.Namespace) -> dict:
+    """Store a message and let Claude understand it (stage 1)."""
+    from .pipeline import process_message
+    inbox_id, created = store.ingest("cli", args.id or str(uuid.uuid4()), args.text)
+    out = process_message(store, _parser(args), inbox_id)
+    out["new_message"] = created
+    return out
+
+
+def cmd_process(store: Store, args: argparse.Namespace) -> list:
+    from .pipeline import process_pending
+    return process_pending(store, _parser(args))
+
+
+def cmd_questions(store: Store, args: argparse.Namespace) -> list:
+    return store.open_questions()
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="atlas", description="Atlas core (stage 0)")
+    p = argparse.ArgumentParser(prog="atlas", description="Atlas — work memory")
     p.add_argument("--db", default=DEFAULT_DB, help="SQLite file (env ATLAS_DB)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -137,6 +160,19 @@ def build_parser() -> argparse.ArgumentParser:
     mt.add_argument("--site", default="all")
     mt.add_argument("--unit")
     mt.set_defaults(func=cmd_metric)
+
+    def with_model(sp: argparse.ArgumentParser) -> argparse.ArgumentParser:
+        sp.add_argument("--model", default=os.environ.get("ATLAS_MODEL", "claude-opus-5-5"))
+        sp.add_argument("--effort", default=os.environ.get("ATLAS_EFFORT", "medium"),
+                        choices=["low", "medium", "high", "xhigh", "max"])
+        return sp
+
+    sy = with_model(with_id(sub.add_parser("say", help="free text, understood by Claude")))
+    sy.add_argument("text")
+    sy.set_defaults(func=cmd_say)
+    with_model(sub.add_parser("process", help="process pending inbox messages with Claude")
+               ).set_defaults(func=cmd_process)
+    sub.add_parser("questions", help="open questions").set_defaults(func=cmd_questions)
 
     sub.add_parser("list", help="open loops").set_defaults(func=cmd_list)
     s = sub.add_parser("show", help="loop with history")

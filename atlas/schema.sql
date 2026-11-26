@@ -104,3 +104,18 @@ BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
 CREATE INDEX IF NOT EXISTS idx_events_object ON events(object_type, object_id, id);
 CREATE INDEX IF NOT EXISTS idx_loops_state ON loops(state);
 CREATE INDEX IF NOT EXISTS idx_inbox_status ON inbox(status);
+
+-- Stage 1: every Claude call is logged (what was asked, what came back, what code rejected).
+CREATE TABLE IF NOT EXISTS llm_runs (
+    id          INTEGER PRIMARY KEY,
+    inbox_id    INTEGER NOT NULL REFERENCES inbox(id),
+    at          TEXT NOT NULL,
+    model       TEXT,
+    request_id  TEXT,
+    status      TEXT NOT NULL CHECK (status IN ('ok', 'api_error', 'refusal', 'bad_output', 'apply_error')),
+    output      TEXT,                     -- JSON items returned by the model
+    report      TEXT,                     -- JSON: rejected items and why
+    error       TEXT,
+    usage       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_llm_runs_inbox ON llm_runs(inbox_id);

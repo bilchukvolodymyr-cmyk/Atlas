@@ -1,0 +1,40 @@
+{"id": "roberto-3-tasks", "text": "Роберто Полі дав завдання: на завтра підготувати місце біля рампи 31, в суботу звільнити зону 2O 06, а на наступний тиждень перевірити етикетки 3Q.", "expect": {"loops": [{"title_has": "рамп", "due_at": "2026-11-27", "assigned_by_has": "Роберто"}, {"title_has": "2O", "due_at": "2026-11-28", "assigned_by_has": "Роберто"}, {"title_has": "етикет", "due_at": "2026-12-05", "assigned_by_has": "Роберто"}]}}
+{"id": "metrics-day", "text": "Сьогодні 10 машин на розвантаження, 18 машин на загрузку, людей 103.", "expect": {"metrics": {"trucks_unload": 10, "trucks_load": 18, "workers_total": 103}, "loops_max": 0}}
+{"id": "metrics-polo2", "text": "На Polo 2 сьогодні 47 людей, на Polo 1 56.", "expect": {"metrics_site": {"polo2": 47, "polo1": 56}, "loops_max": 0}}
+{"id": "hours-end-month", "text": "До кінця місяця треба відправити години агенції.", "expect": {"loops": [{"title_has": "годин", "due_at": "2026-11-30"}]}}
+{"id": "medical", "text": "Нагадай, що в середу медичний огляд для нових працівників кооперативу.", "expect": {"loops": [{"due_at": "2026-12-02"}]}}
+{"id": "waiting-for", "text": "Чекаю від Марко відповідь щодо графіка на суботу.", "expect": {"loops": [{"waiting_on_has": "Марко", "state": "waiting"}]}}
+{"id": "idea-qr", "text": "Ідея: зробити QR-коди на кожній локації, щоб працівник сканував і бачив, що там має лежати.", "expect": {"ideas": 1, "loops_max": 0}}
+{"id": "idea-bluetooth", "text": "Придумав, можна друкувати етикетки з айфона через блютуз на Zebra, без комп'ютера.", "expect": {"ideas": 1, "loops_max": 0}}
+{"id": "event-diary", "text": "Сьогодні з Роберто обговорили, що нових людей з агенції ставимо тільки на Polo 2.", "expect": {"entries_min": 1, "loops_max": 0}}
+{"id": "problem", "text": "Проблема: у зоні 2T54 знову змішали товар двох клієнтів в одній палеті.", "expect": {"entries_min": 1}}
+{"id": "greeting", "text": "Привіт, дякую.", "expect": {"loops_max": 0, "ideas": 0, "metrics": {}}}
+{"id": "italian-task", "text": "Domani entro le 14 preparare le etichette per la serie 1B.75.", "expect": {"loops": [{"title_has": "1B", "due_at": "2026-11-27T14:00"}]}}
+{"id": "italian-metric", "text": "Oggi 12 camion in scarico e 15 in carico.", "expect": {"metrics": {"trucks_unload": 12, "trucks_load": 15}}}
+{"id": "thursday-ambiguous", "text": "У четвер перевірити відмітки в CrossChex.", "expect": {"loops": [{"due_at": null}], "questions_min": 1}}
+{"id": "no-deadline", "text": "Треба колись переробити карту складу для Polo 2.", "expect": {"loops_or_ideas_min": 1, "no_invented_due": true}}
+{"id": "monday", "text": "В понеділок нагадати всім про жилети.", "expect": {"loops": [{"due_at": "2026-11-30"}]}}
+{"id": "date-numeric", "text": "3 грудня приїде перевірка безпеки.", "expect": {"due_any": "2026-12-03"}}
+{"id": "in-two-weeks", "text": "Через два тижні закінчується контракт у двох працівників агенції.", "expect": {"due_any": "2026-12-10"}}
+{"id": "dictation-noise", "text": "ну значить ееее завтра звільнити ну ту зону біля офісу короче", "expect": {"loops": [{"due_at": "2026-11-27"}]}}
+{"id": "two-kinds", "text": "Завтра 9 машин буде на розвантаження, і ще ідея: окрема полиця для повернень.", "expect": {"ideas": 1}}
+{"id": "done-claim", "setup": [{"type": "create_loop", "kind": "task", "title": "Звільнити зону 2O 06", "due_at": "2026-11-28"}], "text": "Зону 2O 06 звільнили.", "expect": {"states": {"1": "verifying"}, "closed": 0, "questions_min": 1}}
+{"id": "done-confirm", "setup": [{"type": "create_loop", "kind": "task", "title": "Відправити години", "state": "active"}, {"type": "transition_loop", "id": 1, "to": "done_claimed", "evidence": "відправив"}, {"type": "transition_loop", "id": 1, "to": "verifying"}, {"type": "ask_question", "object_type": "loop", "object_id": 1, "text": "Підтверджуєш, що «Відправити години» виконано?", "missing_field": "confirm_close"}], "text": "Так, бухгалтерія підтвердила.", "expect": {"states": {"1": "closed"}}}
+{"id": "done-unrelated", "setup": [{"type": "create_loop", "kind": "task", "title": "Підготувати етикетки 3Q"}], "text": "Зробив звіт по годинах.", "expect": {"states": {"1": "active"}, "closed": 0}}
+{"id": "drop", "setup": [{"type": "create_loop", "kind": "task", "title": "Перевірити рампу 39"}], "text": "Рампу 39 перевіряти вже не треба, Роберто сказав.", "expect": {"states": {"1": "dropped"}}}
+{"id": "move-deadline", "setup": [{"type": "create_loop", "kind": "task", "title": "Звільнити зону 2O 06", "due_at": "2026-11-28"}], "text": "Звільнення зони 2O 06 перенесли на понеділок.", "expect": {"loop_due": {"1": "2026-11-30"}, "loops_total": 1}}
+{"id": "no-duplicate", "setup": [{"type": "create_loop", "kind": "task", "title": "Відправити години агенції", "due_at": "2026-11-30"}], "text": "Не забути відправити години агенції до кінця місяця.", "expect": {"loops_total": 1}}
+{"id": "assigned-italian", "text": "Roberto mi ha chiesto di preparare entro sabato la lista dei lavoratori in scadenza.", "expect": {"loops": [{"due_at": "2026-11-28", "assigned_by_has": "Roberto"}]}}
+{"id": "who-unknown", "text": "Сказали до п'ятниці прибрати палети з проходу.", "expect": {"loops": [{"due_at": "2026-11-27", "assigned_by": null}]}}
+{"id": "number-words", "text": "Сьогодні було десять машин на розвантаження.", "expect": {"metrics_ok_or_question": "trucks_unload"}}
+{"id": "past-event", "text": "Вчора двоє з кооперативу не прийшли без попередження.", "expect": {"entries_min": 1, "loops_max": 1}}
+{"id": "agreement", "text": "Домовились з Лукою, що він у суботу вийде на 6 ранку.", "expect": {"loops": [{"due_at": "2026-11-28"}]}}
+{"id": "russian", "text": "Завтра надо проверить остатки на 3Q.15.", "expect": {"loops": [{"due_at": "2026-11-27"}]}}
+{"id": "today-later", "text": "Сьогодні до 17:00 віддати список на медогляд.", "expect": {"loops": [{"due_at": "2026-11-26T17:00"}]}}
+{"id": "multi-roberto-week", "text": "Від Роберто на тиждень: навести порядок у 2V30, перемаркувати 2F08.", "expect": {"loops_min": 2}}
+{"id": "question-answer", "setup": [{"type": "create_loop", "kind": "task", "title": "Перевірити відмітки в CrossChex", "ref": "L"}, {"type": "ask_question", "object_type": "loop", "object_id": "$L", "text": "Коли перевірити відмітки в CrossChex?", "missing_field": "due_at"}], "text": "Завтра.", "expect": {"loop_due": {"1": "2026-11-27"}, "open_questions_max": 0}}
+{"id": "vest-rule", "text": "Рішення: з понеділка всі ходять у жилетах навіть на виході зі складу.", "expect": {"entries_min": 1}}
+{"id": "idea-touch", "setup": [{"type": "create_idea", "title": "QR-коди на локаціях"}], "text": "Щодо ідеї з QR-кодами: почав пробувати на зоні 3Q.", "expect": {"idea_status": {"1": ["exploring", "in_work"]}, "ideas_total": 1}}
+{"id": "label-range", "text": "Треба надрукувати етикетки від 3Q.15.004.01 до 3Q.15.027.01 до суботи.", "expect": {"loops": [{"due_at": "2026-11-28", "title_has": "3Q"}]}}
+{"id": "fake-metric-trap", "text": "Машин сьогодні було багато, не рахував.", "expect": {"metrics": {}}}
+{"id": "french-worker-msg", "text": "Demain réunion sécurité à 8h pour l'équipe du matin.", "expect": {"due_any": "2026-11-27"}}
