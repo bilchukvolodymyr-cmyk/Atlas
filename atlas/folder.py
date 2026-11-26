@@ -29,9 +29,11 @@ SETTLE_SECONDS = 2.0   # a file younger than this may still be being written
 
 
 class FolderInbox:
-    def __init__(self, root: str | os.PathLike, db: str, parser: Any, clock=time.time):
+    def __init__(self, root: str | os.PathLike, db: str, parser: Any, clock=time.time,
+                 inbox: str | os.PathLike | None = None, outbox: str | os.PathLike | None = None):
         self.root = Path(root).expanduser()
-        self.inbox, self.outbox = self.root / "inbox", self.root / "outbox"
+        self.inbox = Path(inbox).expanduser() if inbox else self.root / "inbox"
+        self.outbox = Path(outbox).expanduser() if outbox else self.root / "outbox"
         self.done = self.inbox / "processed"
         for d in (self.inbox, self.outbox, self.done):
             d.mkdir(parents=True, exist_ok=True)
@@ -117,6 +119,8 @@ def main(argv: list[str] | None = None) -> int:
     icloud = "~/Library/Mobile Documents/com~apple~CloudDocs/Atlas"
     p = argparse.ArgumentParser(prog="atlas-folder")
     p.add_argument("--dir", default=os.environ.get("ATLAS_DIR", icloud))
+    p.add_argument("--inbox", help="incoming folder (default DIR/inbox)")
+    p.add_argument("--outbox", help="replies folder (default DIR/outbox)")
     p.add_argument("--db", default=os.environ.get("ATLAS_DB", "~/Atlas/atlas.db"))
     p.add_argument("--interval", type=float, default=20.0)
     p.add_argument("--once", action="store_true", help="one pass, then exit")
@@ -130,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         from .understand import ClaudeCodeParser
         parser = ClaudeCodeParser(model=os.environ.get("ATLAS_CC_MODEL", "opus"))
-    box = FolderInbox(args.dir, str(db), parser)
+    box = FolderInbox(args.dir, str(db), parser, inbox=args.inbox, outbox=args.outbox)
     if args.once:
         for r in box.poll():
             print(r.get("inbox_id"), r.get("status"))

@@ -70,3 +70,15 @@ def test_icloud_placeholders_and_other_files_ignored(tmp_path):
     drop(box, "photo.jpg", "x")
     assert box.poll() == []
     assert client.calls == []
+
+
+def test_custom_inbox_and_outbox_folders(tmp_path):
+    client = FakeClient([item("idea", "QR", title="QR")])
+    box = FolderInbox(tmp_path / "x", str(tmp_path / "a.db"), ClaudeParser(client=client),
+                      clock=lambda: time.time() + 10,
+                      inbox=tmp_path / "Shortcuts" / "Atlas", outbox=tmp_path / "Shortcuts" / "Atlas-replies")
+    (tmp_path / "Shortcuts" / "Atlas" / "20261126-221500-123.txt").write_text("Ідея: QR", "utf-8")
+    [r] = box.poll()
+    assert r["status"] == "applied"
+    assert (tmp_path / "Shortcuts" / "Atlas-replies" / "20261126-221500-123.txt").exists()
+    assert (tmp_path / "Shortcuts" / "Atlas" / "processed" / "20261126-221500-123.txt").exists()
