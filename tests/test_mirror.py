@@ -1,0 +1,151 @@
+"""Google Sheet mirror: rows keyed by id, sent once, re-sent only when changed, never duplicated."""
+import time
+
+import pytest
+
+from atlas.core import Store
+from atlas.folder import FolderInbox
+from atlas.mirror import (DECISIONS, JOURNAL, LOOPS, METRICS, AutoMirror, Mirror, MirrorError,
+                          build)
+from atlas.understand import ClaudeParser
+from test_stage1 import FakeClient, item
+
+
+class FakeSheet:
+    """Does what deploy/sheets/Code.gs does: column A is the key, update or append."""
+
+    def __init__(self, fail=0):
+        self.tabs, self.calls, self.fail = {}, 0, fail
+
+    def __call__(self, url, payload):
+        self.calls += 1
+        if self.fail:
+            self.fail -= 1
+            raise OSError("no network")
+        if payload["token"] != "t":
+            return {"ok": False, "error": "bad token"}
+        up = ap = 0
+        for name, part in payload["sheets"].items():
+            tab = self.tabs.setdefault(name, {})
+            for row in part["rows"]:
+                key = str(row[0])
+                if key in tab:
+                    up += 1
+                else:
+                    ap += 1
+                tab[key] = row
+        return {"ok": True, "updated": up, "appended": ap}
+
+
+@pytest.fixture
+def db(tmp_path):
+    s = Store(tmp_path / "a.db")
+    i, _ = s.ingest("icloud", "m1", "Завтра 40 людей Agenzia, 12 Cooperativa")
+    s.apply(i, [{"type": "record_metric", "date": "2026-07-01", "name": "workers_agenzia", "value": 40},
+                {"type": "record_metric", "date": "2026-07-01", "name": "workers_cooperativa", "value": 12},
+                {"type": "record_metric", "date": "2026-07-01", "site": "polo1", "name": "workers_total", "value": 30},
+                {"type": "create_loop", "kind": "task", "title": "Етикетки 3Q", "state": "active",
+                 "assigned_by": "Roberto Poli"},
+                {"type": "create_entry", "kind": "decision", "text": "Шини пакуємо окремо"}])
+    s.close()
+    return tmp_path / "a.db"
+
+
+def test_rows_from_database(db):
+    rows = build(db)
+    day = rows[METRICS]["2026-07-01"]
+    assert day[1:5] == [40, 12, 52, 30]            # agenzia, coop, total (sum), polo1
+    assert day[6:9] == [416, 8.32, 424.32]          # 52*8, *0.02, sum
+    assert "розрахунок" in day[12] and "Agenzia + Cooperativa" in day[12]
+    [loop] = rows[LOOPS].values()
+    assert loop[1] == "Етикетки 3Q" and loop[3] == "в роботі" and "Roberto Poli" in loop[7]
+    [j] = rows[JOURNAL].values()
+    assert j[3].startswith("Завтра 40") and "справа #1 «Етикетки 3Q»" in j[5]
+    [d] = rows[DECISIONS].values()
+    assert d[2] == "Шини пакуємо окремо"
+
+
+def test_no_total_means_no_hours_invented(tmp_path):
+    s = Store(tmp_path / "a.db")
+    i, _ = s.ingest("cli", "x", "8 машин")
+    s.apply(i, [{"type": "record_metric", "date": "2026-07-02", "name": "trucks_unload", "value": 8}])
+    s.close()
+    day = build(tmp_path / "a.db")[METRICS]["2026-07-02"]
+    assert day[3] == "" and day[6] == "" and day[9] == 8
+
+
+def test_sent_once_then_only_changes(db, tmp_path):
+    sheet = FakeSheet()
+    m = Mirror(db, "u", "t", state=tmp_path / "m.db", post=sheet)
+    first = m.sync()
+    assert first["appended"] == first["sent"] == 4 and first["updated"] == 0
+    assert m.sync()["sent"] == 0 and sheet.calls == 1          # nothing changed -> nothing sent
+    s = Store(db)
+    i, _ = s.ingest("icloud", "m2", "етикетки зроблено")
+    s.apply(i, [{"type": "transition_loop", "id": 1, "to": "done_claimed"}])
+    s.close()
+    again = m.sync()
+    # loop row changed; new journal row appended
+    assert again["updated"] == 1 and again["appended"] == 1
+    assert sheet.tabs[LOOPS]["1"][3] == "кажуть, що зроблено"
+    assert "доказ до справи #1" in sheet.tabs[JOURNAL]["2"][5]
+    assert len(sheet.tabs[LOOPS]) == 1                          # no duplicate
+
+
+def test_lost_state_file_resends_without_duplicates(db, tmp_path):
+    sheet = FakeSheet()
+    Mirror(db, "u", "t", state=tmp_path / "m.db", post=sheet).sync()
+    (tmp_path / "m.db").unlink()
+    r = Mirror(db, "u", "t", state=tmp_path / "m.db", post=sheet).sync()
+    assert r["updated"] == 4 and r["appended"] == 0
+    assert sum(len(t) for t in sheet.tabs.values()) == 4
+
+
+def test_failure_is_retried_next_time(db, tmp_path):
+    sheet = FakeSheet(fail=1)
+    m = Mirror(db, "u", "t", state=tmp_path / "m.db", post=sheet)
+    with pytest.raises(OSError):
+        m.sync()
+    assert m.sync()["sent"] == 4
+
+
+def test_bad_token_is_an_error(db, tmp_path):
+    m = Mirror(db, "u", "wrong", state=tmp_path / "m.db", post=FakeSheet())
+    with pytest.raises(MirrorError):
+        m.sync()
+
+
+def test_database_is_opened_read_only(db, tmp_path):
+    before = db.read_bytes()
+    Mirror(db, "u", "t", state=tmp_path / "m.db", post=FakeSheet()).sync()
+    assert db.read_bytes() == before
+
+
+def test_auto_mirror_waits_for_config(db, tmp_path):
+    cfg = tmp_path / "sheets.json"
+    auto = AutoMirror(db, cfg)
+    assert auto.sync()["sent"] == 0
+    cfg.write_text('{"url": "u", "token": "t"}')
+    auto.mirror = None
+    sheet = FakeSheet()
+    from atlas import mirror as mod
+    orig = mod.http_post
+    mod.http_post = sheet
+    try:
+        auto.mirror = mod.Mirror(db, "u", "t", state=tmp_path / "m.db", post=sheet)
+        assert auto.sync()["sent"] == 4
+    finally:
+        mod.http_post = orig
+
+
+def test_folder_pass_mirrors_and_survives_mirror_failure(tmp_path):
+    client = FakeClient([item("idea", "QR на локаціях", title="QR на локаціях")])
+    box = FolderInbox(tmp_path / "Atlas", str(tmp_path / "a.db"), ClaudeParser(client=client),
+                      clock=lambda: time.time() + 10, downloader=lambda p: None)
+    (box.inbox / "m1.txt").write_text("Ідея: QR на локаціях", encoding="utf-8")
+    sheet = FakeSheet(fail=1)
+    box.mirror = Mirror(box.db, "u", "t", state=tmp_path / "m.db", post=sheet)
+    [r] = box.poll()                                  # mirror fails, message still applied
+    assert r["status"] == "applied"
+    box.poll()                                        # next pass sends it
+    assert "1" in sheet.tabs[JOURNAL]
