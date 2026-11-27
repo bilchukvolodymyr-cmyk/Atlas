@@ -277,7 +277,9 @@ class ClaudeCodeSheets:
             + json.dumps(calls, ensure_ascii=False))
         cmd = [self.executable, "-p", "--output-format", "json",
                "--json-schema", json.dumps(self.SCHEMA), "--model", self.model,
-               "--tools", "", "--allowedTools", self.tool,
+               # --tools "" would also hide the claude.ai connectors, so block built-ins instead
+               "--allowedTools", self.tool,
+               "--disallowedTools", "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task",
                "--setting-sources", "", "--no-session-persistence"]
         try:
             proc = self.runner(cmd, input=prompt, capture_output=True, text=True,
