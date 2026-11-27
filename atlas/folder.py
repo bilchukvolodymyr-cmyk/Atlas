@@ -114,6 +114,8 @@ class FolderInbox:
                 results.append(self._run(store, inbox_id, ext_id, heard))
                 shutil.move(str(path), self.done / path.name)          # never deleted
             for msg in store.pending_inbox(max_attempts=MAX_ATTEMPTS):
+                if msg["source"] != "icloud":   # e.g. Gmail: retried by its own service
+                    continue
                 if self.clock() >= self.next_try.get(msg["id"], 0):
                     results.append(self._run(store, msg["id"], msg["external_id"]))
         finally:

@@ -64,7 +64,7 @@ DONE = {"self": "достатньо мого слова", "artifact": "потр�
 IMPORTANCE = {"low": "низька", "normal": "звичайна", "high": "висока"}
 INBOX_STATUS = {"new": "нове", "processing": "обробляється", "done": "оброблено",
                 "failed": "помилка, повторю"}
-SOURCE = {"icloud": "iPhone", "shortcut": "iPhone", "web": "веб", "cli": "Mac (вручну)"}
+SOURCE = {"icloud": "iPhone", "gmail": "Пошта (Gmail)", "shortcut": "iPhone", "web": "веб", "cli": "Mac (вручну)"}
 OBJ = {"loop": "справа", "entry": "запис", "idea": "ідея", "metric": "показник",
        "question": "питання"}
 ENTRY_KIND = {"event": "подія", "note": "нотатка", "decision": "рішення", "problem": "проблема"}

@@ -114,6 +114,25 @@ today | tomorrow | day_after_tomorrow | weekday:mon..sun | this_week | next_week
 
 Dictation errors are common. Warehouse vocabulary: рампа / ribalta (loading dock, e.g. "рампа 31", "Ribalta 37"), локація / location codes like 3Q.15.004.01, 2T54, 2O 06, 2F08, 2V30, 1B.75, Polo 1 / Polo 2, Agenzia, Cooperativa, CrossChex, етикетки, палети, навантажувач, ретрак, Roberto Poli. When a word looks like a dictation error (e.g. "риба 31" where "рампа 31" is likely), never silently correct it and never record nonsense as a fact: emit an `ask` item ("Ти мав на увазі «рампа 31»?") and, if the rest is clear, the item with the doubtful words kept exactly as dictated. If the whole message is unintelligible, emit only one `ask`.
 
+Emails. A message that starts with "[ЛИСТ]" is an email from his Gmail, not dictation: header \
+lines (Від = from, Кому = to, Копія = cc, Дата, Тема, Вкладення, an excerpt of the previous email \
+in the conversation), then "---" and the email text, usually Italian. "[ЛИСТ] вхідний" was sent \
+to him; "[ЛИСТ] надіслав я" was written by him. In emails he is Volodymyr Bilchuk (colleagues \
+write "Bilciuck", "Bilchuk", "Volodymyr"). Rules for emails:
+- A request or instruction to him (he is in Кому/Копія and the text asks to do, check, verify, \
+prepare, send) -> new_loop task; assigned_by = the sender's name exactly as in the Від line. \
+A deadline in the text ("entro le 16:00", "domani", "carico 30 novembre") -> due, resolved from \
+the email's Дата, not from now. A request addressed to someone else only -> note, not a task.
+- His own email "надіслав я": "Fatto", "fatto", "fatto ✅", "provveduto", "abbiamo provveduto" \
+about an open loop -> change_state done_claimed; a promise of his -> new_loop agreement; a \
+question he asked someone -> new_loop waiting_for with waiting_on = that person.
+- Information worth keeping (a problem, damage, a blocked trolley, a missing pallet, who is away \
+until when, a decision) -> note with the right kind (problem / event / decision).
+- Advertising, signatures, legal notices and greetings produce no items.
+- Write title and text in Ukrainian (he reads Ukrainian), keep location codes, numbers and \
+names exactly as written. `quote` is still copied exactly from the email (Italian).
+- An email never confirms (confirm_done) a loop by itself: that needs his own word.
+
 One message may contain several items (e.g. three tasks from the same manager, or numbers \
 for trucks and workers). Do not duplicate an open loop that already exists: update it instead. \
 Greetings, filler and thanks produce no items."""
