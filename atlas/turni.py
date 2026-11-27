@@ -214,6 +214,26 @@ class ClaudeCodeSheetsReader:
         return got
 
 
+RATE_RANGE = "'STATISTICHE ORE'!A1:H6"
+RATE_LABEL = "RISERVA STRAORD"
+
+
+def reserve_rate(values: list[list[Any]]) -> float | None:
+    """The overtime reserve percent typed in STATISTICHE ORE ("RISERVA STRAORD." | "3,00%") -> 3.0.
+    None when the label or a sensible number (0-20 %) is not there: nothing is guessed."""
+    for row in values or []:
+        for i, cell in enumerate(row):
+            if RATE_LABEL in str(cell).upper():
+                for nxt in row[i + 1:i + 3]:
+                    m = re.fullmatch(r"\s*(\d{1,2}(?:[.,]\d+)?)\s*%?\s*", str(nxt))
+                    if m:
+                        v = float(m.group(1).replace(",", "."))
+                        if 0 <= v <= 20:
+                            return round(v, 2)
+                return None
+    return None
+
+
 class TurniSync:
     def __init__(self, db: str, reader: Any, spreadsheet_id: str, ledger: str | None = None,
                  chunk: int = 20, recheck_last: int = 3):
@@ -239,10 +259,39 @@ class TurniSync:
             c.execute("INSERT OR REPLACE INTO turni VALUES (?,?,?,?)", (tab, day, h, inbox_id))
         c.close()
 
+    def _rate(self, tabs: list[tuple[str, str]]) -> float | None:
+        """Record the overtime percent from STATISTICHE ORE when it differs from the percent that
+        is already in force for the newest day tab. It applies from that day on."""
+        from .core import Store
+        if not tabs:
+            return None
+        rate = reserve_rate(retry(lambda: self.reader.values(self.sid, [RATE_RANGE]))[RATE_RANGE])
+        if rate is None:
+            return None
+        day = tabs[-1][1]
+        store = Store(self.db)
+        try:
+            cur = store.conn.execute("SELECT value FROM metrics WHERE name='overtime_rate' AND site='all' "
+                                     "AND date<=? ORDER BY date DESC LIMIT 1", (day,)).fetchone()
+            if cur is not None and float(cur[0]) == rate:
+                return rate
+            inbox_id, _ = store.ingest("turni", f"rate:{day}:{rate}",
+                                       f"Таблиця змін, STATISTICHE ORE: відсоток понаднормових "
+                                       f"(riserva straord.) {rate:g}% — діє з {day[8:10]}.{day[5:7]}.{day[:4]}")
+            store.apply(inbox_id, [{"type": "record_metric", "date": day, "site": "all",
+                                    "name": "overtime_rate", "value": rate, "unit": "%"}], actor="system")
+        finally:
+            store.close()
+        return rate
+
     def sync(self, limit: int | None = None) -> dict[str, int]:
         from .core import Store
         tabs = [(t, tab_date(t)) for t in retry(lambda: self.reader.titles(self.sid))]
         tabs = sorted([(t, d) for t, d in tabs if d], key=lambda x: x[1])
+        try:
+            self._rate(tabs)
+        except Exception as e:                    # the percent is optional: never block the people count
+            log.warning("turni: overtime percent not read: %s", e)
         known = self._known()
         todo = [t for t in tabs if t[0] not in known] + \
                [t for t in tabs[-self.recheck_last:] if t[0] in known]

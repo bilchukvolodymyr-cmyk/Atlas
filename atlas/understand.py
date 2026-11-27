@@ -32,7 +32,7 @@ ENTRY_KINDS = ["event", "note", "decision", "problem"]
 STATES = ["active", "waiting", "needs_info", "done_claimed", "dropped"]
 IDEA_STATUSES = ["new", "exploring", "planned", "in_work", "done", "dropped"]
 DEFAULT_METRICS = ["trucks_unload", "trucks_load", "workers_total", "workers_agenzia",
-                   "workers_cooperativa"]
+                   "workers_cooperativa", "overtime_rate"]
 
 
 def _nullable(schema: dict[str, Any]) -> dict[str, Any]:
@@ -101,6 +101,8 @@ done_claimed or verifying is really finished (e.g. answers "так" to the confi
 - idea: a new idea (title, text). update_idea: idea_id + idea_status or new text.
 - metric: a daily number. metric = snake_case English name (known names listed below; reuse \
 them), value = the number exactly as said, site = "polo1" | "polo2" | null (null = whole warehouse).
+  overtime_rate = the overtime percent used for planned hours (value 3 for "3%"); it applies from \
+that date on, so record it only when the user states the percent for a day/week/month.
 - ask: one short question when something essential is missing or ambiguous (who, by when, \
 which loop). about = "$L1" or "loop:12". missing_field = the field name. Do not ask about \
 things that are merely optional.

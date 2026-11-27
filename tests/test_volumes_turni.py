@@ -114,3 +114,62 @@ def test_turni_sync_is_idempotent(tmp_path):
     assert v[("2026-11-27", "all", "workers_agenzia")] == 1
     assert v[("2026-11-27", "all", "workers_unknown_type")] == 1
     s.close()
+
+
+from atlas.mirror import METRICS, MONTHS, build, rate_for
+from atlas.turni import reserve_rate
+
+STAT = [["STATISTICHE GIORNALIERE"], ["GIORNO", "25.11.2026"],
+        ["ORE/GIORNO", "8", "", "RISERVA STRAORD.", "3,00%", "", "La riserva è una percentuale"]]
+
+
+class RateReader(Reader):
+    pct = "3,00%"
+
+    def values(self, sid, ranges):
+        self.reads += 1
+        out = {}
+        for r in ranges:
+            if "STATISTICHE" in r:
+                out[r] = [row[:4] + [self.pct] + row[5:] if len(row) > 4 else row for row in STAT]
+            else:
+                out[r] = REG if "DIPENDENTI" in r else DAY
+        return out
+
+
+def test_reserve_rate_reads_only_a_real_percent():
+    assert reserve_rate(STAT) == 3.0
+    assert reserve_rate([["RISERVA STRAORD.", "tanto"]]) is None
+    assert reserve_rate([["ORE", "8"]]) is None
+    assert reserve_rate(DAY) is None
+
+
+def test_overtime_percent_from_sheet_applies_from_that_day(tmp_path):
+    db = str(tmp_path / "a.db")
+    s = Store(db)                                   # an older day, before the percent was seen
+    i, _ = s.ingest("cli", "old", "10 людей")
+    s.apply(i, [{"type": "record_metric", "date": "2026-10-01", "name": "workers_total", "value": 10}])
+    s.close()
+    r = RateReader()
+    sync = TurniSync(db, r, "sid")
+    sync.sync()
+    sync.sync()                                     # same percent: not recorded twice
+    s = Store(db)
+    assert s.conn.execute("SELECT COUNT(*) FROM inbox WHERE external_id LIKE 'rate:%'").fetchone()[0] == 1
+    s.close()
+    rows = build(db)[METRICS]
+    new, old = rows["2026-11-27"], rows["2026-10-01"]
+    assert new[8:11] == [32, 0.96, 32.96] and new[20] == "3%" and "з 27.11.2026" in new[19]
+    assert old[8:11] == [80, 1.6, 81.6] and old[20] == "2%" and "за замовчуванням" in old[19]
+    r.pct = "4%"
+    sync.sync()
+    assert build(db)[METRICS]["2026-11-27"][20] == "4%"
+    nov = build(db)[MONTHS]["2026-11"]
+    assert "4%" in nov[14]
+
+
+def test_rate_for_default_and_periods():
+    rates = [("2026-11-01", 3.0), ("2026-12-01", 4.0)]
+    assert rate_for("2026-10-31", rates)[0] == 0.02
+    assert rate_for("2026-11-15", rates)[0] == 0.03
+    assert rate_for("2026-12-02", rates)[0] == 0.04

@@ -31,7 +31,7 @@ log = logging.getLogger("atlas.mirror")
 TZ = ZoneInfo("Europe/Rome")
 CHUNK = 200
 HOURS_PER_PERSON = 8
-OVERTIME_RATE = 0.02
+OVERTIME_RATE = 0.02          # default when no percent is known for the period (user profile)
 
 JOURNAL = "Журнал"
 LOOPS = "Цикли"
@@ -51,11 +51,12 @@ HEADERS: dict[str, list[str]] = {
     METRICS: ["Дата", "День", "Всього людей", "Polo 1 (людей)", "Polo 2 (людей)", "Polo 3 (людей)",
               "Agenzia (людей)", "Cooperativa (людей)",
               "Базові години — РОЗРАХУНОК (люди×8)",
-              "Понаднормові — РОЗРАХУНОК (базові×0,02)",
+              "Понаднормові — РОЗРАХУНОК (базові×відсоток)",
               "Загальні години — РОЗРАХУНОК",
               "Розвантажень за програмою (машин)", "Розвантажень Polo 1", "Розвантажень Polo 2",
               "Шин за програмою (шт.)", "Navette out", "Машин на завантаження",
-              "Зміна до попереднього робочого дня", "Інші показники", "Примітка"],
+              "Зміна до попереднього робочого дня", "Інші показники", "Примітка",
+              "Відсоток понаднормових — застосовано"],
     MONTHS: ["Місяць", "Днів з даними про людей", "Середньо людей на день", "Найбільше людей",
              "Найменше людей", "Середньо Agenzia", "Середньо Cooperativa",
              "Базові години за місяць — РОЗРАХУНОК", "Загальні години за місяць — РОЗРАХУНОК",
@@ -180,6 +181,24 @@ def _people(vals: dict[tuple[str, str], float]) -> tuple[float | None, str]:
     return None, ""
 
 
+def _rates(c: sqlite3.Connection) -> list[tuple[str, float]]:
+    """(from_date, percent) of the overtime percent, as recorded (shift sheet or voice)."""
+    return [(r["date"], float(r["value"])) for r in c.execute(
+        "SELECT date, value FROM metrics WHERE name='overtime_rate' AND site='all' ORDER BY date")]
+
+
+def rate_for(day: str, rates: list[tuple[str, float]]) -> tuple[float, str]:
+    """The percent in force on that day: the latest one recorded on or before it, else 2 %."""
+    found = None
+    for since, pct in rates:
+        if since <= day:
+            found = (since, pct)
+    if found is None:
+        return OVERTIME_RATE, f"відсоток {_num(OVERTIME_RATE * 100)}% — за замовчуванням"
+    since, pct = found
+    return pct / 100, f"відсоток {_num(pct)}% — заданий з {since[8:10]}.{since[5:7]}.{since[:4]}"
+
+
 def _delta(label: str, now: float | None, before: float | None) -> str:
     if now is None or before is None:
         return ""
@@ -202,14 +221,16 @@ def metric_rows(c: sqlite3.Connection) -> dict[str, list[Any]]:
     rows = {}
     prev: dict[tuple[str, str], float] | None = None
     prev_people: float | None = None
+    rates = _rates(c)
     for day, vals in sorted(_day_values(c).items()):
         get = vals.get
         total, how = _people(vals)
         note = [how] if how else []
         base = total * HOURS_PER_PERSON if total is not None else None
-        over = base * OVERTIME_RATE if base is not None else None
+        rate, rate_how = rate_for(day, rates)
+        over = base * rate if base is not None else None
         if base is not None:
-            note.append("години — розрахунок для планування, не фактичний табель")
+            note.append("години — розрахунок для планування, не фактичний табель; " + rate_how)
         unk = get(("workers_unknown_type", "all"))
         if unk:
             note.append(f"{_num(unk)} людей немає в DIPENDENTI — тип не визначено")
@@ -222,7 +243,7 @@ def metric_rows(c: sqlite3.Connection) -> dict[str, list[Any]]:
             ) if x]
         other = "; ".join(f"{n}{'' if s == 'all' else ' ' + s} = {_num(v)}"
                           for (n, s), v in sorted(vals.items())
-                          if (n, s) not in SHOWN and n != "workers_unknown_type")
+                          if (n, s) not in SHOWN and n not in ("workers_unknown_type", "overtime_rate"))
         wd = WEEKDAYS[datetime.fromisoformat(day).weekday()]
         rows[day] = [day, wd, _num(total), _num(get(("workers_total", "polo1"))),
                      _num(get(("workers_total", "polo2"))), _num(get(("workers_total", "polo3"))),
@@ -231,7 +252,8 @@ def metric_rows(c: sqlite3.Connection) -> dict[str, list[Any]]:
                      _num(get(("trucks_unload", "all"))), _num(get(("trucks_unload", "polo1"))),
                      _num(get(("trucks_unload", "polo2"))), _num(get(("unload_pieces", "all"))),
                      _num(get(("navette_out", "all"))), _num(get(("trucks_load", "all"))),
-                     "; ".join(changes), other, "; ".join(note)]
+                     "; ".join(changes), other, "; ".join(note),
+                     f"{_num(round(rate * 100, 2))}%" if base is not None else ""]
         prev = vals
         if total is not None:
             prev_people = total
@@ -240,11 +262,16 @@ def metric_rows(c: sqlite3.Connection) -> dict[str, list[Any]]:
 
 def month_rows(c: sqlite3.Connection) -> dict[str, list[Any]]:
     months: dict[str, dict[str, list[float]]] = {}
+    rates = _rates(c)
     for day, vals in _day_values(c).items():
-        m = months.setdefault(day[:7], {"people": [], "ag": [], "co": [], "unl": [], "pcs": []})
+        m = months.setdefault(day[:7], {"people": [], "ag": [], "co": [], "unl": [], "pcs": [],
+                                        "hours": [], "pct": []})
         total, _ = _people(vals)
         if total is not None:
             m["people"].append(total)
+            r, _how = rate_for(day, rates)
+            m["hours"].append(total * HOURS_PER_PERSON * (1 + r))
+            m["pct"].append(round(r * 100, 2))
         for key, name in (("ag", "workers_agenzia"), ("co", "workers_cooperativa"),
                           ("unl", "trucks_unload"), ("pcs", "unload_pieces")):
             if (name, "all") in vals:
@@ -264,11 +291,12 @@ def month_rows(c: sqlite3.Connection) -> dict[str, list[Any]]:
                      _num(min(m["people"]) if m["people"] else None),
                      _num(round(avg(m["ag"]), 1) if m["ag"] else None),
                      _num(round(avg(m["co"]), 1) if m["co"] else None),
-                     _num(base), _num(base * (1 + OVERTIME_RATE) if base is not None else None),
+                     _num(base), _num(round(sum(m["hours"]), 2) if m["hours"] else None),
                      len(m["unl"]), _num(sum(m["unl"]) if m["unl"] else None),
                      _num(round(avg(m["unl"]), 1) if m["unl"] else None),
                      _num(sum(m["pcs"]) if m["pcs"] else None), change,
-                     "години — розрахунок для планування, не фактичний табель" if base else ""]
+                     ("години — розрахунок для планування, не фактичний табель; відсоток понаднормових: "
+                      + ", ".join(f"{_num(p)}%" for p in sorted(set(m["pct"])))) if base else ""]
         if a is not None:
             prev_avg = a
     return rows
