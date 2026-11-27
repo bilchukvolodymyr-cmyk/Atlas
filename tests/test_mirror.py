@@ -221,3 +221,18 @@ def test_ranges_are_grouped_and_quoted():
 
 from atlas.mirror import HEADERS
 HEADERS_M = HEADERS[METRICS]
+
+
+def test_days_and_months_stay_in_date_order(db, tmp_path):
+    fake = FakeClaude()
+    m = Mirror(db, "", "", state=tmp_path / "m.db", post=ClaudeCodeSheets("SID", runner=fake))
+    m.sync()
+    s = Store(db)                                  # an earlier day and month loaded later
+    i, _ = s.ingest("cli", "old", "5 людей")
+    s.apply(i, [{"type": "record_metric", "date": "2026-06-30", "name": "workers_total", "value": 5}])
+    s.close()
+    m.sync()
+    assert [fake.grid[METRICS][n][0] for n in (2, 3)] == ["2026-06-30", "2026-07-01"]
+    assert [fake.grid[MONTHS][n][0] for n in (2, 3)] == ["червень 2026", "липень 2026"]
+    before = len(fake.cmds)
+    assert m.sync()["sent"] == 0 and len(fake.cmds) == before     # stable afterwards

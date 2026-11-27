@@ -38,6 +38,7 @@ LOOPS = "Цикли"
 METRICS = "Показники по днях"
 DECISIONS = "Рішення та правила"
 MONTHS = "Підсумки по місяцях"
+SORTED = {METRICS, MONTHS}     # tabs whose rows are always in key (date) order
 WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "нд"]
 MONTH_NAMES = ["січень", "лютий", "березень", "квітень", "травень", "червень", "липень",
                "серпень", "вересень", "жовтень", "листопад", "грудень"]
@@ -466,7 +467,8 @@ class Mirror:
 
     def sync(self) -> dict[str, int]:
         """Send rows that are new or changed since the last successful send. Each key keeps
-        its row number in the sheet for ever (row 1 = header), so a resend overwrites it."""
+        its row number in the sheet for ever (row 1 = header), so a resend overwrites it.
+        Exception: SORTED tabs, where row number = position of the key in date order."""
         sent, rownums = self._read()
         next_row: dict[str, int] = {}
         for (sheet, _k), n in rownums.items():
@@ -476,6 +478,14 @@ class Mirror:
             hh = _hash(HEADERS[sheet])
             if sent.get((sheet, "__header__")) != hh:
                 pending.append((sheet, "__header__", HEADERS[sheet], hh, 0))
+            if sheet in SORTED:
+                # small tabs kept in date order: the row number follows the sorted key, so an
+                # earlier day loaded later moves the rows below it down (rewritten in place)
+                for pos, key in enumerate(sorted(rows), start=2):
+                    h = _hash(rows[key])
+                    if sent.get((sheet, key)) != h or rownums.get((sheet, key)) != pos:
+                        pending.append((sheet, key, rows[key], h, pos))
+                continue
             for key, row in rows.items():
                 h = _hash(row)
                 if sent.get((sheet, key)) != h:
