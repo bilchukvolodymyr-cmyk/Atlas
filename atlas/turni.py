@@ -21,7 +21,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from .mail import BUILTIN_BLOCK, MailError, final_result, tool_calls
+from .mail import BUILTIN_BLOCK, LOAD, MailError, final_result, retry, tool_calls
 
 log = logging.getLogger("atlas.turni")
 TAB = re.compile(r"^\s*(\d{2})\.(\d{2})\.(\d{4})\s*$")
@@ -186,7 +186,8 @@ class ClaudeCodeSheetsReader:
 
     def titles(self, spreadsheet_id: str) -> list[str]:
         tool = "get_spreadsheet"
-        out = self._run(tool, f"Call the tool {self.prefix}{tool} once with exactly "
+        out = self._run(tool, LOAD.format(tool=self.prefix + tool)
+                        + f"Call the tool {self.prefix}{tool} once with exactly "
                         + json.dumps({"spreadsheetId": spreadsheet_id,
                                       "fields": ["sheets.properties.title"]})
                         + ". Call no other tool. Then reply DONE.")
@@ -199,7 +200,7 @@ class ClaudeCodeSheetsReader:
 
     def values(self, spreadsheet_id: str, ranges: list[str]) -> dict[str, list[list[Any]]]:
         tool = "get_values"
-        prompt = (f"Call the tool {self.prefix}{tool} once for EACH range in this list, with "
+        prompt = (LOAD.format(tool=self.prefix + tool) + f"Call the tool {self.prefix}{tool} once for EACH range in this list, with "
                   f"spreadsheetId \"{spreadsheet_id}\" and the range copied exactly. Call no other "
                   "tool and change nothing. Then reply DONE.\n" + json.dumps(ranges, ensure_ascii=False))
         out = self._run(tool, prompt)
@@ -240,7 +241,7 @@ class TurniSync:
 
     def sync(self, limit: int | None = None) -> dict[str, int]:
         from .core import Store
-        tabs = [(t, tab_date(t)) for t in self.reader.titles(self.sid)]
+        tabs = [(t, tab_date(t)) for t in retry(lambda: self.reader.titles(self.sid))]
         tabs = sorted([(t, d) for t, d in tabs if d], key=lambda x: x[1])
         known = self._known()
         todo = [t for t in tabs if t[0] not in known] + \
@@ -249,12 +250,12 @@ class TurniSync:
             todo = todo[:limit]
         if not todo:
             return {"tabs": len(tabs), "read": 0, "recorded": 0}
-        reg = registry(self.reader.values(self.sid, ["'DIPENDENTI'!A1:C1000"])["'DIPENDENTI'!A1:C1000"])
+        reg = registry(retry(lambda: self.reader.values(self.sid, ["'DIPENDENTI'!A1:C1000"]))["'DIPENDENTI'!A1:C1000"])
         recorded = read = 0
         for i in range(0, len(todo), self.chunk):
             part = todo[i:i + self.chunk]
             ranges = {f"'{t}'!A1:P200": (t, d) for t, d in part}
-            vals = self.reader.values(self.sid, list(ranges))
+            vals = retry(lambda: self.reader.values(self.sid, list(ranges)))
             store = Store(self.db)
             try:
                 for rng, (t, d) in ranges.items():

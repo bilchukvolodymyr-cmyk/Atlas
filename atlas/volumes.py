@@ -144,11 +144,19 @@ def backfill_mail(db: str, gmail: Any, since: str, chunk: int = 8) -> dict[str, 
     """Read old Fintyre programmes (read only) and store their numbers. Safe to repeat."""
     from .core import Store
     from .mail import _names, msg_time, outgoing
-    threads = gmail.search(f"from:fintyre.it after:{since} (programma OR volumi OR scarichi OR navette)")
-    ids = [t["id"] for t in threads]
+    from datetime import date as _d, timedelta
+    from .mail import retry
+    y, m, d = (int(x) for x in since.split("/"))
+    start, ids = _d(y, m, d), []
+    while start <= _d.today():                   # one month at a time: no page limit is hit
+        end = (start.replace(day=1) + timedelta(days=32)).replace(day=1)
+        q = (f"from:fintyre.it after:{start:%Y/%m/%d} before:{end:%Y/%m/%d} "
+             "(programma OR volumi OR scarichi OR navette)")
+        ids += [t["id"] for t in retry(lambda: gmail.search(q)) if t["id"] not in ids]
+        start = end
     found = stored = 0
     for i in range(0, len(ids), chunk):
-        full = gmail.fetch(ids[i:i + chunk])
+        full = retry(lambda: gmail.fetch(ids[i:i + chunk]))
         store = Store(db)
         try:
             for t in full.values():

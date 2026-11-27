@@ -158,7 +158,7 @@ def test_lost_ledger_never_duplicates(tmp_path):
 
 def test_gmail_failure_marks_nothing_and_retries(tmp_path):
     work = msg("w1", "tw", "luigi@work.it", "Ciao Bilciuck, controlla la ribalta 31.")
-    runner = Runner(OSError("no network"),
+    runner = Runner(OSError("no network"), OSError("no network"), OSError("no network"),
                     stream([(P + "search_threads", summary(("tw", work)))]),
                     stream([(P + "get_thread", {"id": "tw", "messages": [work]})],
                            {"threads": [{"threadId": "tw", "relevant": True, "reason": "робота"}]}))

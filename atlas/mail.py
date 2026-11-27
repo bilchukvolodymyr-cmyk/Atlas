@@ -57,6 +57,24 @@ class MailError(Exception):
     pass
 
 
+# Connector tools are "deferred" in Claude Code: without loading the schema first the model
+# sometimes guesses the arguments and the tool rejects them.
+LOAD = ("First load the tool's schema with the ToolSearch tool, query \"select:{tool}\". "
+        "Use exactly the argument names of that schema. ")
+
+
+def retry(fn, attempts: int = 3):
+    """A Claude Code call can fail by chance (a guessed argument, a busy connector): try again."""
+    last: Exception | None = None
+    for _ in range(attempts):
+        try:
+            return fn()
+        except MailError as exc:
+            last = exc
+            log.warning("retrying after: %s", str(exc)[:200])
+    raise last  # type: ignore[misc]
+
+
 # ------------------------------------------------------------------ text of one email
 FORWARD = re.compile(r"^\s*(i|fw|fwd|tr|inoltro|wg)\s*:", re.I)
 _REPLY_MARKERS = [
@@ -277,10 +295,10 @@ class ClaudeCodeGmail:
     def search(self, query: str) -> list[dict[str, Any]]:
         """Threads matching `query`, newest message of each (THREAD_VIEW_SUMMARY), all pages."""
         tool = self.prefix + "search_threads"
-        prompt = (f"Call the tool {tool} with exactly these arguments: "
+        prompt = (f"{LOAD.format(tool=tool)}Call the tool {tool} with exactly these arguments: "
                   + json.dumps({"query": query, "pageSize": 20, "view": "THREAD_VIEW_SUMMARY"})
                   + ". If the answer has a nextPageToken, call it again with the same arguments plus "
-                  "pageToken set to that token; repeat until there is no nextPageToken (at most 15 "
+                  "pageToken set to that token; repeat until there is no nextPageToken (at most 60 "
                   "calls). Call no other tool. Then reply with the single word DONE.")
         out = self._run(self._cmd(self.search_model, [tool]), prompt)
         final_result(out)
@@ -306,7 +324,7 @@ class ClaudeCodeGmail:
                           "to": m.get("toRecipients"), "subject": m.get("subject"),
                           "snippet": (m.get("snippet") or "")[:300], "labels": m.get("labelIds"),
                           "sent_by_me": outgoing(m)})
-        prompt = TRIAGE_PROMPT.format(tool=tool) + "\n\n" + json.dumps(brief, ensure_ascii=False)
+        prompt = LOAD.format(tool=tool) + TRIAGE_PROMPT.format(tool=tool) + "\n\n" + json.dumps(brief, ensure_ascii=False)
         out = self._run(self._cmd(self.triage_model, [tool], self.TRIAGE_SCHEMA), prompt)
         res = final_result(out)
         verdicts = {v["threadId"]: v for v in (res.get("structured_output") or {}).get("threads") or []
@@ -318,7 +336,7 @@ class ClaudeCodeGmail:
     def fetch(self, thread_ids: list[str]) -> dict[str, dict]:
         """Full threads by id (no triage)."""
         tool = self.prefix + "get_thread"
-        prompt = (f"Call the tool {tool} once for EACH thread id in this list, with "
+        prompt = (f"{LOAD.format(tool=tool)}Call the tool {tool} once for EACH thread id in this list, with "
                   "{\"threadId\": <id>, \"messageFormat\": \"PLAIN_TEXT\"}. Call no other tool and "
                   "change nothing. Then reply DONE.\n" + json.dumps(thread_ids))
         out = self._run(self._cmd(self.search_model, [tool]), prompt)
@@ -433,14 +451,14 @@ class MailPoller:
             self.ledger.put("floor", floor)
         cursor = int(self.ledger.get("cursor") or floor)
         since = max(int(floor), cursor - self.overlap_hours * 3600)
-        threads = self.gmail.search(f"after:{since} -in:spam -in:trash")
+        threads = retry(lambda: self.gmail.search(f"after:{since} -in:spam -in:trash"))
         known = self.ledger.thread_last()
         fresh = [t for t in threads
                  if (t.get("messages") or [{}])[-1].get("id") != known.get(t["id"])]
         report = {"threads": len(threads), "new_threads": len(fresh), "relevant": 0,
                   "stored": 0, "results": []}
         if fresh:
-            verdicts, full = self.gmail.triage_and_fetch(fresh)
+            verdicts, full = retry(lambda: self.gmail.triage_and_fetch(fresh), attempts=2)
             stored = self.ledger.stored()
             todo: list[tuple[datetime, dict[str, Any], dict[str, Any] | None]] = []
             done_threads = []
