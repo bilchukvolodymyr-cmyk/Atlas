@@ -78,7 +78,8 @@ DAY = [["d", "", "persone totale", "4"], [], ["", "", "POLO 1", "3"], ["", "", "
        ["", "", "TURNO da 06:00 a 14:00", "", "", "TURNO CENTRALE"],
        ["", "", "ROSSI MARIO", "NUOVO", "", "BIANCHI  LUCA"], ["", "", "NERI PAOLO"],
        ["", "", "2", "", "", "1"],
-       ["", "", "Piano Risorse", "", "", "POLO 2"], ["", "", "VERDI ANNA"]]
+       ["", "", "Piano Risorse", "", "", "POLO 2"],
+       ["", "", "VERDI ANNA", "", "", "", "", "", "", "", "", "", "", "", "", "ASSENTE PERSONA"]]
 
 
 def test_count_day_uses_register_and_never_guesses():

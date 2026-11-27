@@ -28,6 +28,8 @@ TAB = re.compile(r"^\s*(\d{2})\.(\d{2})\.(\d{4})\s*$")
 SECTION = re.compile(r"\bPOLO\s*([123])\b", re.I)
 NOT_NAME = re.compile(r"TURNO|PIANO|RISORSE|POLO|NUOVO|PERSONE|TOTALE|CENTRALE|NOTTURNO|"
                       r"LUNEDI|MARTEDI|MERCOLEDI|GIOVEDI|VENERDI|SABATO|DOMENICA", re.I)
+SHIFT_COLUMNS = (2, 5, 8, 11)
+VERSION = "2"   # part of the content hash: a counting change re-reads every tab
 WRITE_TOOLS = ("update_values", "append_values", "batch_clear_values", "update_formulas",
                "update_spreadsheet", "insert_dimension", "copy_sheet_to_another_spreadsheet")
 
@@ -105,7 +107,8 @@ def count_day(values: list[list[Any]], reg: dict[str, str]) -> dict[str, Any]:
             continue
         if site is None:
             continue
-        for c in cells:
+        for col in SHIFT_COLUMNS:          # C, F, I, L; column P lists ASSENTI / RIPOSO / Lista nera
+            c = cells[col] if col < len(cells) else ""
             if looks_like_name(c):
                 key = norm(c)
                 seen.setdefault(site, {})[key] = reg.get(key, "unknown")
@@ -257,7 +260,7 @@ class TurniSync:
                 for rng, (t, d) in ranges.items():
                     v = vals[rng]
                     read += 1
-                    h = hashlib.sha256(json.dumps([v, sorted(reg.items())], ensure_ascii=False)
+                    h = hashlib.sha256(json.dumps([VERSION, v, sorted(reg.items())], ensure_ascii=False)
                                        .encode()).hexdigest()[:16]
                     if known.get(t) == h:
                         continue
