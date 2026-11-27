@@ -113,7 +113,7 @@ def _event_text(e: sqlite3.Row) -> str:
     if e["type"] == "evidence_added":
         return f"доказ до справи #{e['object_id']}: «{str(p.get('evidence', ''))[:80]}»"
     verb = {"created": "", "updated": "змінено ", "state_changed": "", "verified": "перевірено ",
-            "answered": "відповідь на "}.get(e["type"], f"{e['type']} ")
+            "answered": "відповідь на ", "asked": ""}.get(e["type"], f"{e['type']} ")
     return f"{verb}{what} #{e['object_id']} {label}".strip()
 
 
