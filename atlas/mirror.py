@@ -220,54 +220,162 @@ class MirrorError(Exception):
     pass
 
 
+def _col(n: int) -> str:
+    out = ""
+    while n:
+        n, r = divmod(n - 1, 26)
+        out = chr(65 + r) + out
+    return out
+
+
+class ClaudeCodeSheets:
+    """Writes rows into the sheet through the Claude Code CLI on the Mac, which is logged in with
+    the user's Claude subscription and has the Google Sheets connector. No Apps Script, no
+    Google Cloud project, no payment. Python decides every cell and every range; Claude only
+    passes them to the Sheets tool, and the reported cell counts are checked by Python."""
+
+    SCHEMA = {"type": "object", "required": ["results"], "properties": {"results": {
+        "type": "array", "items": {"type": "object", "required": ["range", "updatedCells"],
+                                   "properties": {"range": {"type": "string"},
+                                                  "updatedCells": {"type": "integer"}}}}}}
+
+    def __init__(self, spreadsheet_id: str, model: str = "sonnet",
+                 tool: str = "mcp__claude_ai_Google_Sheets__update_values",
+                 executable: str | None = None, timeout: float = 300.0, runner: Any = None):
+        import shutil
+        import subprocess
+        self.spreadsheet_id, self.model, self.tool, self.timeout = spreadsheet_id, model, tool, timeout
+        self.executable = executable or shutil.which("claude") or "claude"
+        self.runner = runner or subprocess.run
+
+    def calls(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        out = []
+        for name, part in payload["sheets"].items():
+            width = len(part["header"])
+            q = "'" + name.replace("'", "''") + "'"
+            if part.get("write_header"):
+                out.append({"range": f"{q}!A1:{_col(width)}1", "values": [part["header"]]})
+            rows = sorted(zip(part["at"], part["rows"]))
+            i = 0
+            while i < len(rows):
+                j = i
+                while j + 1 < len(rows) and rows[j + 1][0] == rows[j][0] + 1:
+                    j += 1
+                out.append({"range": f"{q}!A{rows[i][0]}:{_col(width)}{rows[j][0]}",
+                            "values": [r for _n, r in rows[i:j + 1]]})
+                i = j + 1
+        return out
+
+    def __call__(self, _url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        calls = self.calls(payload)
+        prompt = (
+            f"Call the tool {self.tool} once for EACH item of the JSON list below, with "
+            f"spreadsheetId \"{self.spreadsheet_id}\" and the item's range and values copied "
+            "exactly: same text, same numbers, same empty strings, same order. Do not change, "
+            "translate, fix or skip anything, and call no other tool. Then return results: for "
+            "each item its range and the updatedCells number the tool reported.\n\n"
+            + json.dumps(calls, ensure_ascii=False))
+        cmd = [self.executable, "-p", "--output-format", "json",
+               "--json-schema", json.dumps(self.SCHEMA), "--model", self.model,
+               "--tools", "", "--allowedTools", self.tool,
+               "--setting-sources", "", "--no-session-persistence"]
+        try:
+            proc = self.runner(cmd, input=prompt, capture_output=True, text=True,
+                               encoding="utf-8", timeout=self.timeout)
+        except Exception as exc:
+            raise MirrorError(f"claude CLI: {type(exc).__name__}: {exc}") from exc
+        if proc.returncode != 0:
+            raise MirrorError(f"claude CLI exit {proc.returncode}: {(proc.stderr or proc.stdout)[:300]}")
+        try:
+            env = json.loads(proc.stdout)
+        except ValueError as exc:
+            raise MirrorError(f"claude CLI output is not JSON: {proc.stdout[:300]}") from exc
+        if env.get("is_error"):
+            raise MirrorError(f"claude CLI error: {str(env.get('result'))[:300]}")
+        results = (env.get("structured_output") or {}).get("results") or []
+        got = {r.get("range", "").replace("'", ""): r.get("updatedCells") for r in results}
+        for c in calls:
+            cells = sum(len(v) for v in c["values"])
+            reported = got.get(c["range"].replace("'", ""))
+            # the Sheets API does not count trailing empty cells, so allow fewer, never zero/none
+            if not reported or reported > cells:
+                raise MirrorError(f"sheet write not confirmed for {c['range']}: {reported} of {cells}")
+        return {"ok": True, "updated": 0, "appended": 0, "calls": len(calls)}
+
+
 class Mirror:
     def __init__(self, db: str | os.PathLike, url: str, token: str,
                  state: str | os.PathLike | None = None,
-                 post: Callable[[str, dict[str, Any]], dict[str, Any]] = http_post):
+                 post: Callable[[str, dict[str, Any]], dict[str, Any]] = http_post,
+                 chunk: int = CHUNK):
         self.db = Path(db).expanduser()
-        self.url, self.token, self.post = url, token, post
+        self.url, self.token, self.post, self.chunk = url, token, post, chunk
         self.state_path = Path(state).expanduser() if state else self.db.with_name("mirror.db")
         s = sqlite3.connect(self.state_path, timeout=30)
         s.execute("CREATE TABLE IF NOT EXISTS sent (sheet TEXT NOT NULL, key TEXT NOT NULL, "
                   "hash TEXT NOT NULL, PRIMARY KEY (sheet, key))")
+        s.execute("CREATE TABLE IF NOT EXISTS rows (sheet TEXT NOT NULL, key TEXT NOT NULL, "
+                  "rownum INTEGER NOT NULL, PRIMARY KEY (sheet, key))")
         s.commit()
         s.close()
 
-    def _sent(self) -> dict[tuple[str, str], str]:
+    def _read(self) -> tuple[dict[tuple[str, str], str], dict[tuple[str, str], int]]:
         s = sqlite3.connect(self.state_path, timeout=30)
         try:
-            return {(r[0], r[1]): r[2] for r in s.execute("SELECT sheet, key, hash FROM sent")}
+            sent = {(r[0], r[1]): r[2] for r in s.execute("SELECT sheet, key, hash FROM sent")}
+            rows = {(r[0], r[1]): r[2] for r in s.execute("SELECT sheet, key, rownum FROM rows")}
+            return sent, rows
         finally:
             s.close()
 
-    def _mark(self, items: list[tuple[str, str, str]]) -> None:
+    def _mark(self, items: list[tuple[str, str, str, int]]) -> None:
         s = sqlite3.connect(self.state_path, timeout=30)
         try:
             with s:
-                s.executemany("INSERT OR REPLACE INTO sent(sheet, key, hash) VALUES (?,?,?)", items)
+                s.executemany("INSERT OR REPLACE INTO sent(sheet, key, hash) VALUES (?,?,?)",
+                              [(a, b, c) for a, b, c, _n in items])
+                s.executemany("INSERT OR REPLACE INTO rows(sheet, key, rownum) VALUES (?,?,?)",
+                              [(a, b, n) for a, b, _c, n in items if n])
         finally:
             s.close()
 
     def sync(self) -> dict[str, int]:
-        """Send rows that are new or changed since the last successful send."""
-        sent = self._sent()
-        pending: list[tuple[str, str, list[Any], str]] = []
+        """Send rows that are new or changed since the last successful send. Each key keeps
+        its row number in the sheet for ever (row 1 = header), so a resend overwrites it."""
+        sent, rownums = self._read()
+        next_row: dict[str, int] = {}
+        for (sheet, _k), n in rownums.items():
+            next_row[sheet] = max(next_row.get(sheet, 1), n)
+        pending: list[tuple[str, str, list[Any], str, int]] = []
         for sheet, rows in build(self.db).items():
+            hh = _hash(HEADERS[sheet])
+            if sent.get((sheet, "__header__")) != hh:
+                pending.append((sheet, "__header__", HEADERS[sheet], hh, 0))
             for key, row in rows.items():
                 h = _hash(row)
                 if sent.get((sheet, key)) != h:
-                    pending.append((sheet, key, row, h))
+                    n = rownums.get((sheet, key))
+                    if n is None:
+                        n = next_row[sheet] = next_row.get(sheet, 1) + 1
+                    pending.append((sheet, key, row, h, n))
         counts = {"sent": 0, "updated": 0, "appended": 0}
-        for i in range(0, len(pending), CHUNK):
-            part = pending[i:i + CHUNK]
+        data = [p for p in pending if p[1] != "__header__"]
+        headers = [p for p in pending if p[1] == "__header__"]
+        for i in range(0, max(len(data), 1 if headers else 0), self.chunk):
+            part = data[i:i + self.chunk] + (headers if i == 0 else [])
             sheets: dict[str, dict[str, Any]] = {}
-            for sheet, _key, row, _h in part:
-                sheets.setdefault(sheet, {"header": HEADERS[sheet], "rows": []})["rows"].append(row)
+            for sheet, key, row, _h, n in part:
+                d = sheets.setdefault(sheet, {"header": HEADERS[sheet], "rows": [], "at": []})
+                if key == "__header__":
+                    d["write_header"] = True
+                else:
+                    d["rows"].append(row)
+                    d["at"].append(n)
             answer = self.post(self.url, {"token": self.token, "sheets": sheets})
             if not answer.get("ok"):
                 raise MirrorError(f"Google sheet refused: {answer.get('error', answer)}")
-            self._mark([(sheet, key, h) for sheet, key, _row, h in part])
-            counts["sent"] += len(part)
+            self._mark([(sheet, key, h, n) for sheet, key, _row, h, n in part])
+            counts["sent"] += sum(1 for p in part if p[1] != "__header__")
             counts["updated"] += int(answer.get("updated", 0))
             counts["appended"] += int(answer.get("appended", 0))
         if counts["sent"]:
@@ -275,32 +383,56 @@ class Mirror:
         return counts
 
 
-def load_config(path: str | os.PathLike = "~/Atlas/sheets.json") -> tuple[str, str] | None:
-    url, token = os.environ.get("ATLAS_SHEETS_URL"), os.environ.get("ATLAS_SHEETS_TOKEN")
+def load_config(path: str | os.PathLike = "~/Atlas/sheets.json") -> dict[str, Any] | None:
+    cfg: dict[str, Any] = {}
     p = Path(path).expanduser()
-    if (not url or not token) and p.exists():
+    if p.exists():
         cfg = json.loads(p.read_text(encoding="utf-8"))
-        url, token = url or cfg.get("url"), token or cfg.get("token")
-    return (url, token) if url and token else None
+    if os.environ.get("ATLAS_SHEETS_URL"):
+        cfg["url"] = os.environ["ATLAS_SHEETS_URL"]
+    if os.environ.get("ATLAS_SHEETS_TOKEN"):
+        cfg["token"] = os.environ["ATLAS_SHEETS_TOKEN"]
+    if cfg.get("spreadsheet_id") or (cfg.get("url") and cfg.get("token")):
+        return cfg
+    return None
 
 
 def from_config(db: str | os.PathLike, path: str | os.PathLike = "~/Atlas/sheets.json") -> Mirror | None:
+    """sheets.json either {"spreadsheet_id": ...} (written through Claude Code's Google Sheets
+    connector) or {"url": ..., "token": ...} (Apps Script web app, deploy/sheets/Code.gs)."""
     cfg = load_config(path)
-    return Mirror(db, *cfg) if cfg else None
+    if cfg is None:
+        return None
+    if cfg.get("spreadsheet_id"):
+        kw = {k: cfg[k] for k in ("model", "tool") if cfg.get(k)}
+        return Mirror(db, "", "", post=ClaudeCodeSheets(cfg["spreadsheet_id"], **kw),
+                      chunk=int(cfg.get("chunk", 60)))
+    return Mirror(db, cfg["url"], cfg["token"])
 
 
 class AutoMirror:
-    """Picks up ~/Atlas/sheets.json when it appears, without restarting the service."""
+    """Picks up ~/Atlas/sheets.json when it appears, without restarting the service.
+    After a failure it waits before trying again (a Claude call is not free of limits)."""
 
-    def __init__(self, db: str | os.PathLike, path: str | os.PathLike = "~/Atlas/sheets.json"):
+    def __init__(self, db: str | os.PathLike, path: str | os.PathLike = "~/Atlas/sheets.json",
+                 clock: Callable[[], float] | None = None, retry_after: float = 300.0):
+        import time
         self.db, self.path, self.mirror = db, path, None
+        self.clock = clock or time.time
+        self.retry_after, self.not_before = retry_after, 0.0
 
     def sync(self) -> dict[str, int]:
+        if self.clock() < self.not_before:
+            return {"sent": 0, "updated": 0, "appended": 0}
         if self.mirror is None:
             self.mirror = from_config(self.db, self.path)
             if self.mirror is None:
                 return {"sent": 0, "updated": 0, "appended": 0}
-        return self.mirror.sync()
+        try:
+            return self.mirror.sync()
+        except Exception:
+            self.not_before = self.clock() + self.retry_after
+            raise
 
 
 def main(argv: list[str] | None = None) -> int:

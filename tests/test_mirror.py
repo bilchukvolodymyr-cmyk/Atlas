@@ -149,3 +149,72 @@ def test_folder_pass_mirrors_and_survives_mirror_failure(tmp_path):
     assert r["status"] == "applied"
     box.poll()                                        # next pass sends it
     assert "1" in sheet.tabs[JOURNAL]
+
+
+# ---------------------------------------------------------------- Claude Code + Sheets connector
+import json as _json
+from types import SimpleNamespace
+
+from atlas.mirror import ClaudeCodeSheets
+
+
+class FakeClaude:
+    """Plays Claude Code calling the Sheets tool: applies each range to an in-memory grid."""
+
+    def __init__(self, lie=False):
+        self.grid, self.cmds, self.lie = {}, [], lie
+
+    def __call__(self, cmd, input, **kw):
+        self.cmds.append(cmd)
+        calls = _json.loads(input[input.index("["):])
+        results = []
+        for c in calls:
+            tab, rng = c["range"].rsplit("!", 1)
+            tab = tab.strip("'")
+            first = int(rng.split(":")[0][1:])
+            for i, row in enumerate(c["values"]):
+                self.grid.setdefault(tab, {})[first + i] = row
+            cells = sum(len(v) for v in c["values"])
+            results.append({"range": c["range"], "updatedCells": 0 if self.lie else cells})
+        out = {"is_error": False, "structured_output": {"results": results}}
+        return SimpleNamespace(returncode=0, stdout=_json.dumps(out), stderr="")
+
+
+def test_claude_code_writer_fixed_rows_no_duplicates(db, tmp_path):
+    fake = FakeClaude()
+    w = ClaudeCodeSheets("SID", runner=fake, executable="claude")
+    m = Mirror(db, "", "", state=tmp_path / "m.db", post=w)
+    assert m.sync()["sent"] == 4
+    assert fake.grid[METRICS][1] == HEADERS_M and fake.grid[METRICS][2][0] == "2026-07-01"
+    assert fake.grid[JOURNAL][2][0] == 1
+    assert "--allowedTools" in fake.cmds[0] and "SID" not in fake.cmds[0]
+    assert m.sync()["sent"] == 0 and len(fake.cmds) == 1
+    s = Store(db)
+    i, _ = s.ingest("icloud", "m2", "етикетки зроблено")
+    s.apply(i, [{"type": "transition_loop", "id": 1, "to": "done_claimed"}])
+    s.close()
+    m.sync()
+    assert sorted(fake.grid[JOURNAL]) == [1, 2, 3]          # header, row 1, new row 2
+    assert sorted(fake.grid[LOOPS]) == [1, 2]                # same loop row overwritten
+    assert fake.grid[LOOPS][2][3] == "кажуть, що зроблено"
+
+
+def test_claude_code_writer_unconfirmed_write_is_retried(db, tmp_path):
+    fake = FakeClaude(lie=True)
+    m = Mirror(db, "", "", state=tmp_path / "m.db", post=ClaudeCodeSheets("SID", runner=fake))
+    with pytest.raises(MirrorError):
+        m.sync()
+    fake.lie = False
+    assert m.sync()["sent"] == 4
+
+
+def test_ranges_are_grouped_and_quoted():
+    w = ClaudeCodeSheets("SID", runner=None)
+    calls = w.calls({"sheets": {METRICS: {"header": ["a", "b"], "write_header": True,
+                                          "rows": [["x", 1], ["y", 2], ["z", 3]], "at": [5, 2, 3]}}})
+    assert [c["range"] for c in calls] == ["'Показники по днях'!A1:B1",
+                                           "'Показники по днях'!A2:B3", "'Показники по днях'!A5:B5"]
+
+
+from atlas.mirror import HEADERS
+HEADERS_M = HEADERS[METRICS]
