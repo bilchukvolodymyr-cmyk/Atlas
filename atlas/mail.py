@@ -167,6 +167,9 @@ def tool_results(stream: str, tool_name: str) -> list[Any]:
         content = (ev.get("message") or {}).get("content")
         if not isinstance(content, list):
             continue
+        # Claude Code replaces a big result in the transcript with a "<persisted-output>"
+        # stub; the event's own tool_use_result keeps the whole output.
+        whole = ev.get("tool_use_result")
         for block in content:
             if not isinstance(block, dict):
                 continue
@@ -175,14 +178,38 @@ def tool_results(stream: str, tool_name: str) -> list[Any]:
             elif block.get("type") == "tool_result" and block.get("tool_use_id") in uses:
                 if block.get("is_error"):
                     raise MailError(f"{tool_name} failed: {str(block.get('content'))[:300]}")
+                parsed = _from_whole(whole)
+                if parsed is not None:
+                    out.append(parsed)
+                    continue
                 raw = block.get("content")
                 if isinstance(raw, list):
                     raw = "".join(p.get("text", "") for p in raw if isinstance(p, dict))
+                if isinstance(raw, str) and raw.lstrip().startswith("<persisted-output>"):
+                    raise MailError(f"{tool_name} output was cut by Claude Code (too large)")
                 try:
                     out.append(json.loads(raw))
                 except (TypeError, ValueError) as exc:
                     raise MailError(f"{tool_name} output is not Gmail JSON: {str(raw)[:300]}") from exc
     return out
+
+
+def _from_whole(whole: Any) -> Any:
+    """The full tool output from an event's tool_use_result: {structuredContent, content}."""
+    if not isinstance(whole, dict):
+        return None
+    sc = whole.get("structuredContent")
+    if isinstance(sc, dict) and sc:
+        return sc
+    raw = whole.get("content")
+    if isinstance(raw, list):
+        raw = "".join(p.get("text", "") for p in raw if isinstance(p, dict))
+    if isinstance(raw, str) and raw.lstrip().startswith("{"):
+        try:
+            return json.loads(raw)
+        except ValueError:
+            return None
+    return None
 
 
 def final_result(stream: str) -> dict[str, Any]:
@@ -244,9 +271,9 @@ class ClaudeCodeGmail:
         """Threads matching `query`, newest message of each (THREAD_VIEW_SUMMARY), all pages."""
         tool = self.prefix + "search_threads"
         prompt = (f"Call the tool {tool} with exactly these arguments: "
-                  + json.dumps({"query": query, "pageSize": 50, "view": "THREAD_VIEW_SUMMARY"})
+                  + json.dumps({"query": query, "pageSize": 20, "view": "THREAD_VIEW_SUMMARY"})
                   + ". If the answer has a nextPageToken, call it again with the same arguments plus "
-                  "pageToken set to that token; repeat until there is no nextPageToken (at most 10 "
+                  "pageToken set to that token; repeat until there is no nextPageToken (at most 15 "
                   "calls). Call no other tool. Then reply with the single word DONE.")
         out = self._run(self._cmd(self.search_model, [tool]), prompt)
         final_result(out)

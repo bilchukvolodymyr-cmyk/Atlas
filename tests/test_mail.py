@@ -205,3 +205,19 @@ def test_folder_service_leaves_gmail_messages_alone(tmp_path):
                       clock=lambda: time.time() + 10, downloader=lambda p: None)
     assert box.poll() == [] and client.calls == []
     assert list(box.outbox.iterdir()) == []
+
+
+def test_big_output_is_taken_from_tool_use_result_not_the_stub():
+    full = {"threads": [{"id": "big"}]}
+    lines = [{"type": "assistant", "message": {"content": [
+                 {"type": "tool_use", "id": "t0", "name": P + "search_threads", "input": {}}]}},
+             {"type": "user", "message": {"content": [
+                 {"type": "tool_result", "tool_use_id": "t0",
+                  "content": "<persisted-output>\nOutput too large (50.5KB). Preview..."}]},
+              "tool_use_result": {"content": [{"type": "text", "text": json.dumps(full)}],
+                                  "structuredContent": full}}]
+    out = "\n".join(json.dumps(l) for l in lines)
+    assert tool_results(out, P + "search_threads") == [full]
+    del lines[1]["tool_use_result"]
+    with pytest.raises(MailError, match="too large"):
+        tool_results("\n".join(json.dumps(l) for l in lines), P + "search_threads")
