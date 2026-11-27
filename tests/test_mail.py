@@ -221,3 +221,22 @@ def test_big_output_is_taken_from_tool_use_result_not_the_stub():
     del lines[1]["tool_use_result"]
     with pytest.raises(MailError, match="too large"):
         tool_results("\n".join(json.dumps(l) for l in lines), P + "search_threads")
+
+
+def test_programme_mail_is_counted_by_code_without_the_parser(tmp_path):
+    from test_volumes_turni import PROG
+    m = msg("p1", "tp", "luigi.apicella@fintyre.it", PROG, subject="Programma 26/11/2026")
+    runner = Runner(stream([(P + "search_threads", summary(("tp", m)))]),
+                    stream([(P + "get_thread", {"id": "tp", "messages": [m]})],
+                           {"threads": [{"threadId": "tp", "relevant": True, "reason": "програма"}]}))
+    poller, parser = make_poller(tmp_path, runner)
+    r = poller.poll()
+    assert r["stored"] == 1 and r["results"][0]["status"] == "programme"
+    assert parser.client.calls == []
+    s = Store(str(tmp_path / "a.db"))
+    v = {(x[0], x[1]): x[2] for x in s.conn.execute(
+        "SELECT site, name, value FROM metrics WHERE date='2026-11-26'")}
+    assert v[("all", "trucks_unload")] == 3 and v[("polo2", "unload_pieces")] == 870
+    [src] = [x[0] for x in s.conn.execute("SELECT source FROM inbox")]
+    assert src == "programma"
+    s.close()

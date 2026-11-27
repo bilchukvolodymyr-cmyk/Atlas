@@ -37,6 +37,10 @@ JOURNAL = "Журнал"
 LOOPS = "Цикли"
 METRICS = "Показники по днях"
 DECISIONS = "Рішення та правила"
+MONTHS = "Підсумки по місяцях"
+WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "нд"]
+MONTH_NAMES = ["січень", "лютий", "березень", "квітень", "травень", "червень", "липень",
+               "серпень", "вересень", "жовтень", "листопад", "грудень"]
 
 HEADERS: dict[str, list[str]] = {
     JOURNAL: ["ID", "Дата і час", "Джерело", "Текст (що почув Atlas)", "Стан обробки",
@@ -44,13 +48,20 @@ HEADERS: dict[str, list[str]] = {
     LOOPS: ["ID", "Справа", "Тип", "Стан", "Наступна дія", "Строк", "Нагадати",
             "Учасники", "Чекаю відповіді від", "Бажаний результат", "Як перевірити завершення",
             "Важливість", "Створено з запису (ID журналу)", "Оновлено", "Змін в історії"],
-    METRICS: ["Дата", "Agenzia (людей)", "Cooperativa (людей)", "Всього людей",
-              "Polo 1 (людей)", "Polo 2 (людей)",
+    METRICS: ["Дата", "День", "Всього людей", "Polo 1 (людей)", "Polo 2 (людей)", "Polo 3 (людей)",
+              "Agenzia (людей)", "Cooperativa (людей)",
               "Базові години — РОЗРАХУНОК (люди×8)",
               "Понаднормові — РОЗРАХУНОК (базові×0,02)",
               "Загальні години — РОЗРАХУНОК",
-              "Машин на розвантаження", "Машин на завантаження", "Інші показники",
-              "Примітка"],
+              "Розвантажень за програмою (машин)", "Розвантажень Polo 1", "Розвантажень Polo 2",
+              "Шин за програмою (шт.)", "Navette out", "Машин на завантаження",
+              "Зміна до попереднього робочого дня", "Інші показники", "Примітка"],
+    MONTHS: ["Місяць", "Днів з даними про людей", "Середньо людей на день", "Найбільше людей",
+             "Найменше людей", "Середньо Agenzia", "Середньо Cooperativa",
+             "Базові години за місяць — РОЗРАХУНОК", "Загальні години за місяць — РОЗРАХУНОК",
+             "Днів з програмою розвантажень", "Розвантажень за місяць (машин)",
+             "Середньо розвантажень на день", "Шин за програмою за місяць (шт.)",
+             "Зміна до попереднього місяця", "Примітка"],
     DECISIONS: ["ID", "Дата", "Текст", "Коротко", "Створено з запису (ID журналу)"],
 }
 
@@ -64,7 +75,8 @@ DONE = {"self": "достатньо мого слова", "artifact": "потр�
 IMPORTANCE = {"low": "низька", "normal": "звичайна", "high": "висока"}
 INBOX_STATUS = {"new": "нове", "processing": "обробляється", "done": "оброблено",
                 "failed": "помилка, повторю"}
-SOURCE = {"icloud": "iPhone", "gmail": "Пошта (Gmail)", "shortcut": "iPhone", "web": "веб", "cli": "Mac (вручну)"}
+SOURCE = {"icloud": "iPhone", "gmail": "Пошта (Gmail)", "programma": "Пошта: програма розвантажень",
+          "turni": "Таблиця змін", "shortcut": "iPhone", "web": "веб", "cli": "Mac (вручну)"}
 OBJ = {"loop": "справа", "entry": "запис", "idea": "ідея", "metric": "показник",
        "question": "питання"}
 ENTRY_KIND = {"event": "подія", "note": "нотатка", "decision": "рішення", "problem": "проблема"}
@@ -147,35 +159,118 @@ def loop_rows(c: sqlite3.Connection) -> dict[str, list[Any]]:
     return rows
 
 
-def metric_rows(c: sqlite3.Connection) -> dict[str, list[Any]]:
+def _day_values(c: sqlite3.Connection) -> dict[str, dict[tuple[str, str], float]]:
     by_day: dict[str, dict[tuple[str, str], float]] = {}
     for m in c.execute("SELECT date, site, name, value FROM metrics ORDER BY date, name, site"):
         by_day.setdefault(m["date"], {})[(m["name"], m["site"])] = m["value"]
+    return by_day
+
+
+def _people(vals: dict[tuple[str, str], float]) -> tuple[float | None, str]:
+    get = vals.get
+    total = get(("workers_total", "all"))
+    if total is not None:
+        return total, ""
+    ag, co = get(("workers_agenzia", "all")), get(("workers_cooperativa", "all"))
+    if ag is not None and co is not None:
+        return ag + co, "всього = Agenzia + Cooperativa"
+    sites = [get(("workers_total", f"polo{i}")) for i in (1, 2, 3)]
+    if any(v is not None for v in sites):
+        return sum(v or 0 for v in sites), "всього = сума по Polo"
+    return None, ""
+
+
+def _delta(label: str, now: float | None, before: float | None) -> str:
+    if now is None or before is None:
+        return ""
+    d = now - before
+    sign = "+" if d > 0 else ("−" if d < 0 else "±")
+    return f"{label} {sign}{_num(abs(d))} ({_num(before)}→{_num(now)})"
+
+
+SHOWN = {("workers_agenzia", "all"), ("workers_cooperativa", "all"), ("workers_total", "all"),
+         ("workers_total", "polo1"), ("workers_total", "polo2"), ("workers_total", "polo3"),
+         ("trucks_unload", "all"), ("trucks_unload", "polo1"), ("trucks_unload", "polo2"),
+         ("trucks_unload", "polo3"), ("unload_pieces", "all"), ("unload_pieces", "polo1"),
+         ("unload_pieces", "polo2"), ("unload_pieces", "polo3"), ("navette_out", "all"),
+         ("trucks_load", "all"), ("workers_agenzia", "polo1"), ("workers_agenzia", "polo2"),
+         ("workers_agenzia", "polo3"), ("workers_cooperativa", "polo1"),
+         ("workers_cooperativa", "polo2"), ("workers_cooperativa", "polo3")}
+
+
+def metric_rows(c: sqlite3.Connection) -> dict[str, list[Any]]:
     rows = {}
-    for day, vals in by_day.items():
+    prev: dict[tuple[str, str], float] | None = None
+    prev_people: float | None = None
+    for day, vals in sorted(_day_values(c).items()):
         get = vals.get
-        agenzia, coop = get(("workers_agenzia", "all")), get(("workers_cooperativa", "all"))
-        p1, p2 = get(("workers_total", "polo1")), get(("workers_total", "polo2"))
-        total, note = get(("workers_total", "all")), []
-        if total is None and agenzia is not None and coop is not None:
-            total = agenzia + coop
-            note.append("всього = Agenzia + Cooperativa")
-        elif total is None and p1 is not None and p2 is not None:
-            total = p1 + p2
-            note.append("всього = Polo 1 + Polo 2")
+        total, how = _people(vals)
+        note = [how] if how else []
         base = total * HOURS_PER_PERSON if total is not None else None
         over = base * OVERTIME_RATE if base is not None else None
         if base is not None:
             note.append("години — розрахунок для планування, не фактичний табель")
-        shown = {("workers_agenzia", "all"), ("workers_cooperativa", "all"),
-                 ("workers_total", "all"), ("workers_total", "polo1"), ("workers_total", "polo2"),
-                 ("trucks_unload", "all"), ("trucks_load", "all")}
+        unk = get(("workers_unknown_type", "all"))
+        if unk:
+            note.append(f"{_num(unk)} людей немає в DIPENDENTI — тип не визначено")
+        changes = []
+        if prev is not None:
+            changes = [x for x in (
+                _delta("люди", total, prev_people),
+                _delta("розвантаження", get(("trucks_unload", "all")), prev.get(("trucks_unload", "all"))),
+                _delta("шини", get(("unload_pieces", "all")), prev.get(("unload_pieces", "all"))),
+            ) if x]
         other = "; ".join(f"{n}{'' if s == 'all' else ' ' + s} = {_num(v)}"
-                          for (n, s), v in sorted(vals.items()) if (n, s) not in shown)
-        rows[day] = [day, _num(agenzia), _num(coop), _num(total), _num(p1), _num(p2),
+                          for (n, s), v in sorted(vals.items())
+                          if (n, s) not in SHOWN and n != "workers_unknown_type")
+        wd = WEEKDAYS[datetime.fromisoformat(day).weekday()]
+        rows[day] = [day, wd, _num(total), _num(get(("workers_total", "polo1"))),
+                     _num(get(("workers_total", "polo2"))), _num(get(("workers_total", "polo3"))),
+                     _num(get(("workers_agenzia", "all"))), _num(get(("workers_cooperativa", "all"))),
                      _num(base), _num(over), _num(base + over if base is not None else None),
-                     _num(get(("trucks_unload", "all"))), _num(get(("trucks_load", "all"))),
-                     other, "; ".join(note)]
+                     _num(get(("trucks_unload", "all"))), _num(get(("trucks_unload", "polo1"))),
+                     _num(get(("trucks_unload", "polo2"))), _num(get(("unload_pieces", "all"))),
+                     _num(get(("navette_out", "all"))), _num(get(("trucks_load", "all"))),
+                     "; ".join(changes), other, "; ".join(note)]
+        prev = vals
+        if total is not None:
+            prev_people = total
+    return rows
+
+
+def month_rows(c: sqlite3.Connection) -> dict[str, list[Any]]:
+    months: dict[str, dict[str, list[float]]] = {}
+    for day, vals in _day_values(c).items():
+        m = months.setdefault(day[:7], {"people": [], "ag": [], "co": [], "unl": [], "pcs": []})
+        total, _ = _people(vals)
+        if total is not None:
+            m["people"].append(total)
+        for key, name in (("ag", "workers_agenzia"), ("co", "workers_cooperativa"),
+                          ("unl", "trucks_unload"), ("pcs", "unload_pieces")):
+            if (name, "all") in vals:
+                m[key].append(vals[(name, "all")])
+    rows, prev_avg = {}, None
+    avg = lambda xs: sum(xs) / len(xs) if xs else None
+    for key in sorted(months):
+        m = months[key]
+        a = avg(m["people"])
+        base = sum(m["people"]) * HOURS_PER_PERSON if m["people"] else None
+        change = ""
+        if a is not None and prev_avg is not None:
+            change = _delta("середньо людей", round(a, 1), round(prev_avg, 1))
+        label = f"{MONTH_NAMES[int(key[5:7]) - 1]} {key[:4]}"
+        rows[key] = [label, len(m["people"]), _num(round(a, 1) if a is not None else None),
+                     _num(max(m["people"]) if m["people"] else None),
+                     _num(min(m["people"]) if m["people"] else None),
+                     _num(round(avg(m["ag"]), 1) if m["ag"] else None),
+                     _num(round(avg(m["co"]), 1) if m["co"] else None),
+                     _num(base), _num(base * (1 + OVERTIME_RATE) if base is not None else None),
+                     len(m["unl"]), _num(sum(m["unl"]) if m["unl"] else None),
+                     _num(round(avg(m["unl"]), 1) if m["unl"] else None),
+                     _num(sum(m["pcs"]) if m["pcs"] else None), change,
+                     "години — розрахунок для планування, не фактичний табель" if base else ""]
+        if a is not None:
+            prev_avg = a
     return rows
 
 
@@ -193,7 +288,7 @@ def build(db: str | os.PathLike) -> dict[str, dict[str, list[Any]]]:
     c.row_factory = sqlite3.Row
     try:
         return {JOURNAL: journal_rows(c), LOOPS: loop_rows(c), METRICS: metric_rows(c),
-                DECISIONS: decision_rows(c)}
+                MONTHS: month_rows(c), DECISIONS: decision_rows(c)}
     finally:
         c.close()
 

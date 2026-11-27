@@ -5,7 +5,7 @@ import pytest
 
 from atlas.core import Store
 from atlas.folder import FolderInbox
-from atlas.mirror import (DECISIONS, JOURNAL, LOOPS, METRICS, AutoMirror, Mirror, MirrorError,
+from atlas.mirror import (DECISIONS, JOURNAL, LOOPS, METRICS, MONTHS, AutoMirror, Mirror, MirrorError,
                           build)
 from atlas.understand import ClaudeParser
 from test_stage1 import FakeClient, item
@@ -54,9 +54,12 @@ def db(tmp_path):
 def test_rows_from_database(db):
     rows = build(db)
     day = rows[METRICS]["2026-07-01"]
-    assert day[1:5] == [40, 12, 52, 30]            # agenzia, coop, total (sum), polo1
-    assert day[6:9] == [416, 8.32, 424.32]          # 52*8, *0.02, sum
-    assert "розрахунок" in day[12] and "Agenzia + Cooperativa" in day[12]
+    assert day[1] == "ср"
+    assert day[2:8] == [52, 30, "", "", 40, 12]     # total (sum), polo1-3, agenzia, coop
+    assert day[8:11] == [416, 8.32, 424.32]         # 52*8, *0.02, sum
+    assert "розрахунок" in day[19] and "Agenzia + Cooperativa" in day[19]
+    [month] = rows[MONTHS].values()
+    assert month[0] == "липень 2026" and month[1:3] == [1, 52] and month[7] == 416
     [loop] = rows[LOOPS].values()
     assert loop[1] == "Етикетки 3Q" and loop[3] == "в роботі" and "Roberto Poli" in loop[7]
     [j] = rows[JOURNAL].values()
@@ -71,14 +74,14 @@ def test_no_total_means_no_hours_invented(tmp_path):
     s.apply(i, [{"type": "record_metric", "date": "2026-07-02", "name": "trucks_unload", "value": 8}])
     s.close()
     day = build(tmp_path / "a.db")[METRICS]["2026-07-02"]
-    assert day[3] == "" and day[6] == "" and day[9] == 8
+    assert day[2] == "" and day[8] == "" and day[11] == 8
 
 
 def test_sent_once_then_only_changes(db, tmp_path):
     sheet = FakeSheet()
     m = Mirror(db, "u", "t", state=tmp_path / "m.db", post=sheet)
     first = m.sync()
-    assert first["appended"] == first["sent"] == 4 and first["updated"] == 0
+    assert first["appended"] == first["sent"] == 5 and first["updated"] == 0
     assert m.sync()["sent"] == 0 and sheet.calls == 1          # nothing changed -> nothing sent
     s = Store(db)
     i, _ = s.ingest("icloud", "m2", "етикетки зроблено")
@@ -97,8 +100,8 @@ def test_lost_state_file_resends_without_duplicates(db, tmp_path):
     Mirror(db, "u", "t", state=tmp_path / "m.db", post=sheet).sync()
     (tmp_path / "m.db").unlink()
     r = Mirror(db, "u", "t", state=tmp_path / "m.db", post=sheet).sync()
-    assert r["updated"] == 4 and r["appended"] == 0
-    assert sum(len(t) for t in sheet.tabs.values()) == 4
+    assert r["updated"] == 5 and r["appended"] == 0
+    assert sum(len(t) for t in sheet.tabs.values()) == 5
 
 
 def test_failure_is_retried_next_time(db, tmp_path):
@@ -106,7 +109,7 @@ def test_failure_is_retried_next_time(db, tmp_path):
     m = Mirror(db, "u", "t", state=tmp_path / "m.db", post=sheet)
     with pytest.raises(OSError):
         m.sync()
-    assert m.sync()["sent"] == 4
+    assert m.sync()["sent"] == 5
 
 
 def test_bad_token_is_an_error(db, tmp_path):
@@ -133,7 +136,7 @@ def test_auto_mirror_waits_for_config(db, tmp_path):
     mod.http_post = sheet
     try:
         auto.mirror = mod.Mirror(db, "u", "t", state=tmp_path / "m.db", post=sheet)
-        assert auto.sync()["sent"] == 4
+        assert auto.sync()["sent"] == 5
     finally:
         mod.http_post = orig
 
@@ -184,7 +187,7 @@ def test_claude_code_writer_fixed_rows_no_duplicates(db, tmp_path):
     fake = FakeClaude()
     w = ClaudeCodeSheets("SID", runner=fake, executable="claude")
     m = Mirror(db, "", "", state=tmp_path / "m.db", post=w)
-    assert m.sync()["sent"] == 4
+    assert m.sync()["sent"] == 5
     assert fake.grid[METRICS][1] == HEADERS_M and fake.grid[METRICS][2][0] == "2026-07-01"
     assert fake.grid[JOURNAL][2][0] == 1
     assert "--allowedTools" in fake.cmds[0] and "SID" not in fake.cmds[0]
@@ -205,7 +208,7 @@ def test_claude_code_writer_unconfirmed_write_is_retried(db, tmp_path):
     with pytest.raises(MirrorError):
         m.sync()
     fake.lie = False
-    assert m.sync()["sent"] == 4
+    assert m.sync()["sent"] == 5
 
 
 def test_ranges_are_grouped_and_quoted():

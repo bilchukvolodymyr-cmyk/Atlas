@@ -38,6 +38,7 @@ from .pipeline import MAX_ATTEMPTS, process_message
 
 log = logging.getLogger("atlas.mail")
 SOURCE = "gmail"
+PROGRAMME_DOMAINS = ("@fintyre.it",)
 MAX_BODY = 4000
 CONTEXT_CHARS = 300
 
@@ -154,8 +155,13 @@ def _tz():
 def tool_results(stream: str, tool_name: str) -> list[Any]:
     """Results of every call of `tool_name` in a `claude -p --output-format stream-json`
     transcript, parsed from the tool's own output (never from the model's words)."""
-    uses: set[str] = set()
-    out: list[Any] = []
+    return [r for _inp, r in tool_calls(stream, tool_name)]
+
+
+def tool_calls(stream: str, tool_name: str) -> list[tuple[dict[str, Any], Any]]:
+    """(arguments, parsed result) of every call of `tool_name`, in order."""
+    uses: dict[str, dict[str, Any]] = {}
+    out: list[tuple[dict[str, Any], Any]] = []
     for line in stream.splitlines():
         line = line.strip()
         if not line.startswith("{"):
@@ -174,13 +180,14 @@ def tool_results(stream: str, tool_name: str) -> list[Any]:
             if not isinstance(block, dict):
                 continue
             if block.get("type") == "tool_use" and block.get("name") == tool_name:
-                uses.add(block.get("id"))
+                uses[block.get("id")] = block.get("input") or {}
             elif block.get("type") == "tool_result" and block.get("tool_use_id") in uses:
                 if block.get("is_error"):
                     raise MailError(f"{tool_name} failed: {str(block.get('content'))[:300]}")
+                inp = uses[block.get("tool_use_id")]
                 parsed = _from_whole(whole)
                 if parsed is not None:
-                    out.append(parsed)
+                    out.append((inp, parsed))
                     continue
                 raw = block.get("content")
                 if isinstance(raw, list):
@@ -188,7 +195,7 @@ def tool_results(stream: str, tool_name: str) -> list[Any]:
                 if isinstance(raw, str) and raw.lstrip().startswith("<persisted-output>"):
                     raise MailError(f"{tool_name} output was cut by Claude Code (too large)")
                 try:
-                    out.append(json.loads(raw))
+                    out.append((inp, json.loads(raw)))
                 except (TypeError, ValueError) as exc:
                     raise MailError(f"{tool_name} output is not Gmail JSON: {str(raw)[:300]}") from exc
     return out
@@ -306,6 +313,17 @@ class ClaudeCodeGmail:
                     if isinstance(v, dict) and v.get("threadId")}
         full = {t["id"]: t for t in tool_results(out, tool) if isinstance(t, dict) and t.get("id")}
         return verdicts, full
+
+
+    def fetch(self, thread_ids: list[str]) -> dict[str, dict]:
+        """Full threads by id (no triage)."""
+        tool = self.prefix + "get_thread"
+        prompt = (f"Call the tool {tool} once for EACH thread id in this list, with "
+                  "{\"threadId\": <id>, \"messageFormat\": \"PLAIN_TEXT\"}. Call no other tool and "
+                  "change nothing. Then reply DONE.\n" + json.dumps(thread_ids))
+        out = self._run(self._cmd(self.search_model, [tool]), prompt)
+        final_result(out)
+        return {t["id"]: t for t in tool_results(out, tool) if isinstance(t, dict) and t.get("id")}
 
 
 TRIAGE_PROMPT = """\
@@ -449,6 +467,13 @@ class MailPoller:
             store = Store(self.db)
             try:
                 for _t, m, prev in todo:
+                    vol = self._volumes(store, m)
+                    if vol is not None:                       # an unloading programme: numbers only
+                        self.ledger.mark_message(m, vol.get("inbox_id"))
+                        report["stored"] += 1
+                        report["results"].append({"inbox_id": vol.get("inbox_id"),
+                                                  "status": "programme"})
+                        continue
                     text = format_email(m, prev)
                     inbox_id, _created = store.ingest(SOURCE, m["id"], text,
                                                       received_at=msg_time(m).strftime("%Y-%m-%dT%H:%M:%SZ"))
@@ -464,6 +489,24 @@ class MailPoller:
         if report["stored"] or report["new_threads"]:
             log.info("mail: %s", {k: v for k, v in report.items() if k != "results"})
         return report
+
+    def _volumes(self, store: Store, m: dict[str, Any]) -> dict[str, Any] | None:
+        """Unloading programme from Fintyre: counted by code (atlas.volumes). When the e-mail
+        is only the programme (a greeting + the table), it is not sent to the parser at all."""
+        from . import volumes
+        if outgoing(m) or not str(m.get("sender", "")).lower().endswith(PROGRAMME_DOMAINS):
+            return None
+        body = m.get("plaintextBody") or ""
+        parsed = volumes.parse_programme(body)
+        if parsed is None:
+            return None
+        who = _names(m).get(m.get("sender", "").lower()) or m.get("sender", "")
+        res = volumes.record(store, m["id"], body, who,
+                             received_at=msg_time(m).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        intro = volumes.intro_text(body)
+        if len(intro) > 250:            # more than "ciao, programma di domani": parse the words too
+            return None
+        return res
 
     def _process(self, store: Store, inbox_id: int) -> dict[str, Any]:
         try:
@@ -481,13 +524,21 @@ class MailPoller:
         finally:
             store.close()
 
-    def run_forever(self, interval: float) -> None:
+    def run_forever(self, interval: float, turni: Any = None, turni_every: float = 3 * 3600) -> None:
         log.info("reading Gmail every %.0f min (read only)", interval / 60)
+        last_turni = 0.0
         while True:
             try:
                 self.poll()
             except Exception as exc:
                 log.warning("mail pass failed, will retry: %s", exc)
+            if turni is not None and time.time() - last_turni >= turni_every:
+                try:
+                    turni.sync()
+                    last_turni = time.time()
+                except Exception as exc:
+                    log.warning("shift sheet read failed, will retry: %s", exc)
+                    last_turni = time.time() - turni_every + 900
             time.sleep(interval)
 
 
@@ -526,7 +577,13 @@ def main(argv: list[str] | None = None) -> int:
         for x in r["results"]:
             print(x.get("inbox_id"), x.get("status"))
         return 0
-    poller.run_forever(float(cfg.get("interval_minutes", 15)) * 60)
+    turni = None
+    if cfg.get("turni_spreadsheet_id"):
+        from .turni import ClaudeCodeSheetsReader, TurniSync
+        turni = TurniSync(str(Path(args.db).expanduser()), ClaudeCodeSheetsReader(
+            prefix=cfg.get("sheets_tool_prefix", "mcp__claude_ai_Google_Sheets__")),
+            cfg["turni_spreadsheet_id"])
+    poller.run_forever(float(cfg.get("interval_minutes", 15)) * 60, turni=turni)
     return 0
 
 
