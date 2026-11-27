@@ -17,7 +17,8 @@ import logging
 import re
 import sqlite3
 import unicodedata
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
 
@@ -261,14 +262,16 @@ class TurniSync:
 
     def _rate(self, tabs: list[tuple[str, str]]) -> float | None:
         """Record the overtime percent from STATISTICHE ORE when it differs from the percent that
-        is already in force for the newest day tab. It applies from that day on."""
+        is already in force on the latest day tab up to today. It applies from that day on."""
         from .core import Store
         if not tabs:
             return None
         rate = reserve_rate(retry(lambda: self.reader.values(self.sid, [RATE_RANGE]))[RATE_RANGE])
         if rate is None:
             return None
-        day = tabs[-1][1]
+        today = datetime.now(ZoneInfo("Europe/Rome")).date().isoformat()
+        past = [d for _, d in tabs if d <= today]      # a tab made in advance (Monday) is not "now"
+        day = past[-1] if past else tabs[0][1]
         store = Store(self.db)
         try:
             cur = store.conn.execute("SELECT value FROM metrics WHERE name='overtime_rate' AND site='all' "

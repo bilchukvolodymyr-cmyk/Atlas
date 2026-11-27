@@ -116,6 +116,8 @@ def test_turni_sync_is_idempotent(tmp_path):
     s.close()
 
 
+from datetime import datetime
+
 from atlas.mirror import METRICS, MONTHS, build, rate_for
 from atlas.turni import reserve_rate
 
@@ -125,6 +127,9 @@ STAT = [["STATISTICHE GIORNALIERE"], ["GIORNO", "25.11.2026"],
 
 class RateReader(Reader):
     pct = "3,00%"
+
+    def titles(self, sid):
+        return ["GUIDA", "26.11.2026", "27.11.2026", "31.12.2099", "DIPENDENTI"]
 
     def values(self, sid, ranges):
         self.reads += 1
@@ -156,6 +161,8 @@ def test_overtime_percent_from_sheet_applies_from_that_day(tmp_path):
     sync.sync()                                     # same percent: not recorded twice
     s = Store(db)
     assert s.conn.execute("SELECT COUNT(*) FROM inbox WHERE external_id LIKE 'rate:%'").fetchone()[0] == 1
+    [(since,)] = s.conn.execute("SELECT date FROM metrics WHERE name='overtime_rate'").fetchall()
+    assert since <= datetime.now().date().isoformat()   # never a tab made in advance
     s.close()
     rows = build(db)[METRICS]
     new, old = rows["2026-11-27"], rows["2026-10-01"]
