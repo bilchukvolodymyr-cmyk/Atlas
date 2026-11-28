@@ -45,7 +45,7 @@ def _icloud_download(path: Path) -> None:
 class FolderInbox:
     def __init__(self, root: str | os.PathLike, db: str, parser: Any, clock=time.time,
                  inbox: str | os.PathLike | None = None, outbox: str | os.PathLike | None = None,
-                 transcriber: Any = None, downloader: Any = None):
+                 transcriber: Any = None, downloader: Any = None, mirror: Any = None):
         self.root = Path(root).expanduser()
         self.inbox = Path(inbox).expanduser() if inbox else self.root / "inbox"
         self.outbox = Path(outbox).expanduser() if outbox else self.root / "outbox"
@@ -58,6 +58,7 @@ class FolderInbox:
         self.downloader = downloader or _icloud_download
         self.audio_failures: dict[str, tuple[int, float]] = {}   # id -> (failures, first failure)
         self.sizes: dict[str, int] = {}   # audio size seen on the previous pass
+        self.mirror = mirror              # optional Google Sheet copy (atlas.mirror)
 
     def _request_downloads(self) -> None:
         """iCloud keeps not-yet-downloaded files as '.name.txt.icloud'; ask macOS to fetch them."""
@@ -113,11 +114,24 @@ class FolderInbox:
                 results.append(self._run(store, inbox_id, ext_id, heard))
                 shutil.move(str(path), self.done / path.name)          # never deleted
             for msg in store.pending_inbox(max_attempts=MAX_ATTEMPTS):
+                if msg["source"] != "icloud":   # e.g. Gmail: retried by its own service
+                    continue
                 if self.clock() >= self.next_try.get(msg["id"], 0):
                     results.append(self._run(store, msg["id"], msg["external_id"]))
         finally:
             store.close()
+        self._sync_mirror()
         return results
+
+    def _sync_mirror(self) -> None:
+        """Copy changes to the Google Sheet. Failure never affects the database: the
+        rows are simply sent again on the next pass."""
+        if self.mirror is None:
+            return
+        try:
+            self.mirror.sync()
+        except Exception as exc:
+            log.warning("mirror to Google Sheet failed, will retry: %s", exc)
 
     def _transcribe(self, path: Path, ext_id: str) -> str | None:
         if self.transcriber is None:
@@ -205,8 +219,9 @@ def main(argv: list[str] | None = None) -> int:
     if os.environ.get("ATLAS_WHISPER_MODEL"):
         from .transcribe import WhisperCpp
         transcriber = WhisperCpp()
+    from .mirror import AutoMirror
     box = FolderInbox(args.dir, str(db), parser, inbox=args.inbox, outbox=args.outbox,
-                      transcriber=transcriber)
+                      transcriber=transcriber, mirror=AutoMirror(db))
     if args.once:
         for r in box.poll():
             print(r.get("inbox_id"), r.get("status"))
